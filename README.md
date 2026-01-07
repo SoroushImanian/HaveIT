@@ -29,6 +29,7 @@ Built on a modular and robust architecture, HaveIT integrates a **secure network
 ## ✨ Features
 
 - **🧠 Smart Engine:** Automatically identifies source URLs and optimizes the extraction process for the best results.
+- **❤️‍🩹 Autonomous Resilience:** Actively monitors connectivity. If throttling or access issues are detected, the system **automatically diagnoses and rotates** the network route to resolve the issue instantly without user intervention.
 - **🌐 Enhanced Connectivity:** Leverages **Cloudflare Warp** infrastructure to ensure stable, low-latency data streaming and maximum uptime.
 - **🎧 Audiophile Standard:** Enforces a strict **320kbps** bitrate encoding for a premium listening experience.
 - **🖼️ Intelligent Metadata:** Automatically fetches, processes, and embeds high-resolution album art and ID3 tags.
