@@ -3,6 +3,7 @@ import os
 import asyncio
 import time
 import html
+import subprocess
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, APIC, TIT2, TPE1
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -22,13 +23,29 @@ logger = logging.getLogger(__name__)
 active_chats = set()
 last_update_time = {}
 
+def rotate_warp_ip():
+    """
+    Disconnects and Reconnects Warp to get a fresh IP.
+    """
+    try:
+        logger.info("♻️ Rotating Warp IP...")
+        subprocess.run(['warp-cli', 'disconnect'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        time.sleep(2)
+        subprocess.run(['warp-cli', 'connect'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        time.sleep(5)
+        logger.info("✅ Warp IP Rotated Successfully.")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to rotate IP: {e}")
+        return False
+
 async def start(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
     if chat_id not in ALLOWED_CHAT_IDS: return
     
     start_text = (
-        "سلام! من دستیار دانلود موزیک هستم.\n"
-        "لینک بفرست تا عکس و موزیک با کیفیت تحویل بگیری!"
+        "سلام! من دستیار هوشمند دانلود موزیک هستم.\n"
+        "لینک بفرست تا با بالاترین کیفیت برات پردازش کنم."
     )
     if update.effective_chat.type == 'private':
         await update.message.reply_text(start_text)
@@ -45,7 +62,7 @@ async def handle_youtube_link(update: Update, context: CallbackContext) -> None:
     if "youtube.com" not in youtube_url and "youtu.be" not in youtube_url: return
         
     if chat_id in active_chats:
-        await message_obj.reply_text('⚠️ یک دانلود در جریان دارید. لطفاً صبر کنید.', quote=True)
+        await message_obj.reply_text('⚠️ یک پردازش فعال دارید. لطفاً صبر کنید.')
         return
         
     active_chats.add(chat_id)
@@ -55,7 +72,7 @@ async def handle_youtube_link(update: Update, context: CallbackContext) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     status_message = await message_obj.reply_text(
-        '🔍 <b>در حال بررسی لینک...</b>', 
+        '🔍 <b>در حال آنالیز لینک...</b>', 
         reply_markup=reply_markup,
         parse_mode=ParseMode.HTML
     )
@@ -78,70 +95,108 @@ async def download_and_upload(youtube_url, chat_id, status_message, context, loo
     global user_states
     file_name_mp3 = None
     thumbnail_path = None
+    
+    max_retries = 2 
 
-    try:
-        ydl_opts_base = {
-            'format': 'bestaudio/best',
-            'proxy': PROXY_URL,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android_creator', 'android'], 
-                    'player_skip': ['webpage', 'configs', 'js'],
+    for attempt in range(1, max_retries + 1):
+        try:
+            ydl_opts_base = {
+                'format': 'bestaudio/best',
+                'proxy': PROXY_URL,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android_creator', 'android'], 
+                        'player_skip': ['webpage', 'configs', 'js'],
+                    }
+                },
+                'noplaylist': True,
+                'logger': logger,
+                'nocheckcertificate': True,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
                 }
-            },
-            'noplaylist': True,
-            'logger': logger,
-            'nocheckcertificate': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
             }
-        }
 
-        info_dict = await loop.run_in_executor(
-            None, fetch_info_only, youtube_url, ydl_opts_base
-        )
-        
-        if not info_dict: raise Exception("اطلاعات دریافت نشد.")
+            info_dict = await loop.run_in_executor(
+                None, fetch_info_only, youtube_url, ydl_opts_base
+            )
+            
+            if not info_dict: raise Exception("اطلاعات دریافت نشد.")
 
-        duration = info_dict.get('duration', 0)
-        if duration > MAX_DURATION_SECONDS:
-            duration_min = duration // 60
-            limit_min = MAX_DURATION_SECONDS // 60
-            await safe_edit_message(context, status_message, f"❌ <b>خطا:</b> ویدیو {duration_min} دقیقه است.\n(حداکثر مجاز: {limit_min} دقیقه)", parse_mode=ParseMode.HTML)
+            duration = info_dict.get('duration', 0)
+            if duration > MAX_DURATION_SECONDS:
+                duration_min = duration // 60
+                limit_min = MAX_DURATION_SECONDS // 60
+                await safe_edit_message(context, status_message, f"❌ <b>خطا:</b> ویدیو {duration_min} دقیقه است.\n(حداکثر مجاز: {limit_min} دقیقه)", parse_mode=ParseMode.HTML)
+                
+                if chat_id in active_chats: active_chats.remove(chat_id)
+                if chat_id in user_states: del user_states[chat_id]
+                return
+
+            def progress_hook_sync(d):
+                if not user_states.get(chat_id, {}).get('running'):
+                    raise yt_dlp.utils.DownloadError("Cancelled")
+                
+                now = time.time()
+                if chat_id in last_update_time:
+                    if now - last_update_time[chat_id] < 3.0 and d['status'] == 'downloading':
+                        return
+                
+                last_update_time[chat_id] = now
+                asyncio.run_coroutine_threadsafe(update_status_message(d, status_message, context), loop)
+
+            ydl_opts_download = ydl_opts_base.copy()
+            ydl_opts_download.update({
+                'outtmpl': {'default': '%(title)s.%(ext)s'},
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '320',
+                }],
+                'writethumbnail': True,
+            })
+
+            if attempt == 1:
+                await safe_edit_message(context, status_message, "⬇️ <b>تایید شد. شروع دانلود...</b>", parse_mode=ParseMode.HTML)
+            else:
+                await safe_edit_message(context, status_message, "🔄 <b>تلاش مجدد با IP جدید...</b>", parse_mode=ParseMode.HTML)
+
+            info_dict = await loop.run_in_executor(
+                None, blocking_download, youtube_url, ydl_opts_download, progress_hook_sync
+            )
+
+            file_name_base = yt_dlp.YoutubeDL(ydl_opts_download).prepare_filename(info_dict)
+            file_name_mp3 = os.path.splitext(file_name_base)[0] + '.mp3'
+            
+            break 
+
+        except Exception as e:
+            error_msg = str(e)
+            
+            if "Sign in" in error_msg or "429" in error_msg or "unavailable" in error_msg:
+                if attempt < max_retries:
+                    await safe_edit_message(
+                        context, 
+                        status_message, 
+                        "⚠️ <b>خطای شبکه شناسایی شد.</b>\n🛠 در حال دیاگ و تغییر مسیر امن شبکه (Auto-Fix)...", 
+                        parse_mode=ParseMode.HTML
+                    )
+                    await loop.run_in_executor(None, rotate_warp_ip)
+                    continue 
+            
+            if "Cancelled" in error_msg: text = "⛔️ عملیات لغو شد."
+            elif "Sign in" in error_msg: text = "❌ تلاش خودکار ناموفق بود. یوتیوب اجازه دسترسی نمی‌دهد."
+            elif "Timed out" in error_msg: text = "⏳ آپلود زمان‌بر شد (Timeout)."
+            else: text = f"❌ <b>خطا:</b>\n<code>{html.escape(error_msg)}</code>"
+            
+            await safe_edit_message(context, status_message, text, parse_mode=ParseMode.HTML)
+            logger.error(f"Error: {e}")
+            
+            if chat_id in active_chats: active_chats.remove(chat_id)
+            if chat_id in user_states: del user_states[chat_id]
             return
 
-        def progress_hook_sync(d):
-            if not user_states.get(chat_id, {}).get('running'):
-                raise yt_dlp.utils.DownloadError("Cancelled")
-            
-            now = time.time()
-            if chat_id in last_update_time:
-                if now - last_update_time[chat_id] < 3.0 and d['status'] == 'downloading':
-                    return
-            
-            last_update_time[chat_id] = now
-            asyncio.run_coroutine_threadsafe(update_status_message(d, status_message, context), loop)
-
-        ydl_opts_download = ydl_opts_base.copy()
-        ydl_opts_download.update({
-            'outtmpl': {'default': '%(title)s.%(ext)s'},
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '320',
-            }],
-            'writethumbnail': True,
-        })
-
-        await safe_edit_message(context, status_message, "⬇️ <b>تایید شد. شروع دانلود...</b>", parse_mode=ParseMode.HTML)
-
-        info_dict = await loop.run_in_executor(
-            None, blocking_download, youtube_url, ydl_opts_download, progress_hook_sync
-        )
-
-        file_name_base = yt_dlp.YoutubeDL(ydl_opts_download).prepare_filename(info_dict)
-        file_name_mp3 = os.path.splitext(file_name_base)[0] + '.mp3'
-        
+    try:
         for ext in ['.webp', '.jpg', '.png']:
             possible_path = os.path.splitext(file_name_base)[0] + ext
             if os.path.exists(possible_path):
@@ -211,14 +266,8 @@ async def download_and_upload(youtube_url, chat_id, status_message, context, loo
         except: pass
 
     except Exception as e:
-        error_msg = str(e)
-        if "Cancelled" in error_msg: text = "⛔️ عملیات لغو شد."
-        elif "Sign in" in error_msg: text = "⚠️ یوتیوب درخواست لاگین دارد."
-        elif "Timed out" in error_msg: text = "⏳ آپلود به دلیل کندی شبکه زمان‌بر شد (Timeout)."
-        else: text = f"❌ <b>خطا:</b>\n<code>{html.escape(error_msg)}</code>"
-        
-        await safe_edit_message(context, status_message, text, parse_mode=ParseMode.HTML)
-        logger.error(f"Error: {e}")
+        logger.error(f"Processing Error: {e}")
+        await safe_edit_message(context, status_message, f"❌ خطا در پردازش نهایی: {e}")
         
     finally:
         if file_name_mp3 and os.path.exists(file_name_mp3): os.remove(file_name_mp3)
@@ -292,7 +341,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_youtube_link))
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(cancel_callback, pattern='^cancel_'))
-    print("Bot is running...")
+    print("Auto-Healing Bot is running (Fix Applied)...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
