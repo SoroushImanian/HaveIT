@@ -1,162 +1,200 @@
-# 🎵 HaveIT - Your Personal YouTube to MP3 Gateway
+<div align="center">
 
-[![Python Version](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Telegram Bot API](https://img.shields.io/badge/Telegram%20Bot%20API-6.8-blue)](https://core.telegram.org/bots/api)
+<div align="center">
+  <img height="200"src="img\HaveIT.png"/>
+</div>
 
-**HaveIT** is a powerful, self-hosted Telegram bot that allows you to quickly convert and download any YouTube video into a high-quality 320kbps MP3 audio file. The bot operates independently and automatically embeds the original video thumbnail as cover art into the audio file.
+# 🎵 HaveIT
+### The Intelligent Music Gateway
 
-This project is designed for private, controlled use, giving you complete authority over who can use the bot and what its operational limits are.
+[![Python Version](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](https://opensource.org/licenses/MIT)
+[![Telegram Bot API](https://img.shields.io/badge/Telegram%20Bot-API-2CA5E0?style=flat&logo=telegram&logoColor=white)](https://core.telegram.org/bots/api)
+[![Network Layer](https://img.shields.io/badge/Network-Cloudflare%20Warp-F38020?style=flat&logo=cloudflare&logoColor=white)](https://one.one.one.one/)
+
+<p align="center">
+  <b>Universal Music Assistant • High-Fidelity Audio • Smart Metadata • Secure Routing</b>
+</p>
+
+</div>
+
+---
+
+## 📖 Introduction
+
+**HaveIT** is your personal, self-hosted **Audio Assistant**. Designed as a centralized hub for your music needs, HaveIT acts as an intelligent bridge between web streaming libraries and your personal collection.
+
+Built on a modular and robust architecture, HaveIT integrates a **secure network tunneling layer** to ensure high-speed data transfer and consistent connectivity. Whether processing a soundtrack or a music stream, the assistant delivers crystal-clear **320kbps MP3s** with embedded cover art and rich metadata directly to your chat interface.
 
 ## ✨ Features
 
-- **Superior Audio Quality:** All output files are high-bitrate **320kbps MP3s**.
-- **Automatic Cover Art:** The original video thumbnail is automatically embedded into the audio file's metadata.
-- **Access Control:** Only users and channels specified in your `ALLOWED_CHAT_IDS` list can interact with the bot.
-- **Video Duration Limit:** The bot will not download videos longer than a preset limit (default is 10 minutes) to prevent excessive resource consumption.
-- **Cancel Operation:** Users can cancel an ongoing download process via an inline button.
-- **User Cooldown:** Each user has a short cooldown period after a successful download before they can request another.
-- **High Stability:** Designed to run continuously as a `systemd` service, automatically restarting on failure or server reboot.
+- **🧠 Smart Engine:** Automatically identifies source URLs and optimizes the extraction process for the best results.
+- **🌐 Enhanced Connectivity:** Leverages **Cloudflare Warp** infrastructure to ensure stable, low-latency data streaming and maximum uptime.
+- **🎧 Audiophile Standard:** Enforces a strict **320kbps** bitrate encoding for a premium listening experience.
+- **🖼️ Intelligent Metadata:** Automatically fetches, processes, and embeds high-resolution album art and ID3 tags.
+- **🛡️ Private Ecosystem:** Operates exclusively within your defined `ALLOWED_CHAT_IDS`, ensuring resource privacy.
+- **⚡ Live Telemetry:** Provides real-time feedback and progress bars for download and conversion tasks.
+- **🧹 Automated Maintenance:** Features an auto-cleanup routine to manage temporary assets and maintain server hygiene.
 
-## 🚀 Setup and Installation
+---
 
-Follow these steps to set up the bot on your Linux server (Debian/Ubuntu recommended).
+## 🛠️ Prerequisites
 
-### 1. Prerequisites
+To deploy your assistant, ensure your Linux environment (Ubuntu 20.04/22.04 recommended) meets the following requirements:
 
-First, install the necessary system dependencies. `ffmpeg` is essential for audio processing.
+- **Python 3.10+**
+- **FFmpeg** (Core media processing engine)
+- **Git**
+- **Cloudflare Warp** (Required for network routing layer)
 
+### 1. Install System Dependencies
+Update your system and install the necessary packages:
 ```bash
-sudo apt update
-sudo apt install ffmpeg git python3 python3-pip -y
+sudo apt update && sudo apt upgrade -y
+sudo apt install ffmpeg python3 python3-pip git -y
+
 ```
 
-### 2\. Clone the Project
+### 2. Configure Network Layer (Cloudflare Warp)
 
-Clone the repository from GitHub and navigate into the project directory.
+HaveIT relies on a modern network tunnel to handle data streams efficiently and securely. We utilize Cloudflare Warp as the underlying transport layer for optimal performance.
+
+**A) Install the Client:**
 
 ```bash
-git clone https://github.com/SoroushImanian/HaveIT.git
+# Add GPG Key
+curl -fsSL [https://pkg.cloudflareclient.com/pubkey.gpg](https://pkg.cloudflareclient.com/pubkey.gpg) | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+
+# Add Repository
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] [https://pkg.cloudflareclient.com/](https://pkg.cloudflareclient.com/) $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+
+# Install Package
+sudo apt-get update && sudo apt-get install cloudflare-warp
+
+```
+
+**B) Initialize Proxy Interface (Port 3420):**
+Configure the client to operate in proxy mode on port `3420` to route the assistant's traffic.
+
+```bash
+warp-cli registration new
+warp-cli mode proxy
+warp-cli proxy port 3420
+warp-cli connect
+
+```
+
+**C) Verify Network Status:**
+Ensure the tunnel is active and routing traffic correctly:
+
+```bash
+curl -x socks5://127.0.0.1:3420 ifconfig.me
+# Output should reflect the routed network IP.
+
+```
+
+---
+
+## 🚀 Deployment
+
+### 1. Clone the Repository
+
+```bash
+git clone [https://github.com/SoroushImanian/HaveIT.git](https://github.com/SoroushImanian/HaveIT.git)
 cd HaveIT
+
 ```
 
-### 3\. Install Python Libraries
-
-It is highly recommended to use a Python virtual environment.
+### 2. Install Python Requirements
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
 pip install -r requirements.txt
+
 ```
 
-### 4\. Configuration
+*(Core libs: `python-telegram-bot`, `yt-dlp`, `mutagen`, `requests`)*
 
-Before running the bot, you must configure a few critical variables.
+### 3. Configuration
 
-#### A) Allowed Chat IDs
-
-Open the `HaveIT.py` file and populate the `ALLOWED_CHAT_IDS` list with your numeric user ID and any other authorized user or channel IDs.
-
-  - To find your personal `chat_id`, send a message to [@userinfobot](https://t.me/userinfobot) (info bot).
-  - To find a channel's `chat_id`, forward a message from the channel to the info bot.
-
-<!-- end list -->
+Open `HaveIT.py` and customize your assistant's settings:
 
 ```python
-# In your main Python file
-ALLOWED_CHAT_IDS = [123456789, -1001234567890] 
+# 1. Access Control: Add your numeric ID (Get it from @userinfobot)
+ALLOWED_CHAT_IDS = [123456789, 987654321]
+
+# 2. Network Routing: Match this with your Warp port (Step 2B)
+PROXY_URL = 'socks5://127.0.0.1:3420'
+
 ```
 
-#### B) YouTube Cookies (Most Important Step)
+---
 
-To prevent being blocked by YouTube, you must use cookies from a logged-in Google account.
+## 🤖 Running as a Service (Recommended)
 
-1.  Install the [Cookie-Editor](https://chrome.google.com/webstore/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm) extension on your browser.
-2.  Log in to your Google account and visit `youtube.com`.
-3.  Click on the extension, press **Export**, then **Export as Netscape**.
-4.  Create a file named `youtube-cookies.txt` in the same directory as your script (e.g., `/root/youtube-cookies.txt`) and paste the copied content into it.
+For a production-grade deployment, run HaveIT as a background system service.
 
-### 5\. Running the Bot
-
-For the bot to run permanently in the background and start automatically on reboot, setting up a `systemd` service is the best method.
-
-#### A) Create the Service File
-
-Create a new service file using a text editor like `nano`:
-
+1. **Create Service File:**
 ```bash
 sudo nano /etc/systemd/system/HaveIT.service
+
 ```
 
-Paste the following configuration into the file. **Make sure to replace the placeholder token and verify the file paths.**
 
+2. **Paste Configuration:**
+*(Replace `YOUR_BOT_TOKEN_HERE` with your actual API token)*
 ```ini
 [Unit]
-Description=HaveIT - Telegram YouTube Music Downloader Bot
+Description=HaveIT Audio Assistant
 After=network.target
 
 [Service]
-# The user that will run the script (e.g., root)
+Type=simple
 User=root
-
-# The directory where your HaveIT.py and youtube-cookies.txt are located
-WorkingDirectory=/root/
-
-# IMPORTANT: Set your Telegram Bot Token here (in YOUR_TELEGRAM_BOT_TOKEN_HERE)
-Environment="TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN_HERE"
-
-# The command to execute the bot
-# Use `which python3` to find the full path to your python executable
+WorkingDirectory=/root/HaveIT
+Environment="TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN_HERE"
 ExecStart=/usr/bin/python3 /root/HaveIT/HaveIT.py
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
+
 ```
 
-Save and exit the editor (Ctrl+X, then Y, then Enter).
 
-#### B) Manage the Service
-
-Now, use these commands to enable and run your new service:
-
+3. **Activate the Service:**
 ```bash
-# Reload systemd to recognize the new service file
 sudo systemctl daemon-reload
+sudo systemctl enable HaveIT
+sudo systemctl start HaveIT
 
-# Enable the service to start automatically on boot
-sudo systemctl enable HaveIT.service
-
-# Start the service immediately
-sudo systemctl start HaveIT.service
 ```
 
-Your bot is now running as a persistent background service\!
 
-#### C) Useful Service Commands
+4. **Monitor Status:**
+```bash
+sudo systemctl status HaveIT
 
-  - **Check the status:** `sudo systemctl status HaveIT.service`
-  - **View live logs:** `sudo journalctl -u HaveIT.service -f`
-  - **Restart the bot:** `sudo systemctl restart HaveIT.service`
-  - **Stop the bot:** `sudo systemctl stop HaveIT.service`
+```
 
-## (Usage)
 
-Once set up, simply add the bot as an administrator to your channel or send it a private message.
 
-  - **Send a Link:** Send a YouTube video link to the bot.
-  - **Wait:** The bot will display the current processing status.
-  - **Receive the File:** Get your high-quality MP3 file, complete with cover art.
+---
 
 ## 📜 License
 
-This project is licensed under the **MIT License**. See the [LICENSE](https://github.com/SoroushImanian/HaveIT/blob/main/LICENSE) file for more details.
+This project is open-source and available under the **MIT License**.
 
----
 <div align="center">
-  <p><em>“Power belongs to those who seek it”</em></p>
-  <br/>
-  <p><a href="https://SorBlack.com" target="_blank">Powered by SorBlack</a></p>
+
+
+
+
+
+<p><em>“Power belongs to those who seek it”</em></p>
+<p><a href="https://SorBlack.com" target="_blank">Powered by SorBlack</a></p>
 </div>
+
+```
+
+```
