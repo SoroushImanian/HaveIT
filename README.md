@@ -1,7 +1,7 @@
 <div align="center">
 
 <div align="center">
-  <img height="200"src="img\HaveIT.png"/>
+  <img height="340"src="img\HaveIT.png"/>
 </div>
 
 # 🎵 HaveIT
