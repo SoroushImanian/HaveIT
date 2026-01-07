@@ -8,11 +8,11 @@ from mutagen.id3 import ID3, APIC, TIT2, TPE1
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
-from telegram.error import RetryAfter
+from telegram.error import RetryAfter, TimedOut
 import yt_dlp
 
 ALLOWED_CHAT_IDS = [809612055, -1001919485429, 93365812] 
-MAX_DURATION_SECONDS = 900 
+MAX_DURATION_SECONDS = 900  #15min
 PROXY_URL = 'socks5://127.0.0.1:3420' 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -27,7 +27,7 @@ async def start(update: Update, context: CallbackContext) -> None:
     if chat_id not in ALLOWED_CHAT_IDS: return
     
     start_text = (
-        "سلام! من ربات دانلود از یوتیوب هستم.\n"
+        "سلام! من دستیار دانلود موزیک هستم.\n"
         "لینک بفرست تا عکس و موزیک با کیفیت تحویل بگیری!"
     )
     if update.effective_chat.type == 'private':
@@ -55,7 +55,7 @@ async def handle_youtube_link(update: Update, context: CallbackContext) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     status_message = await message_obj.reply_text(
-        '🔍 <b>در حال بررسی لینک و دریافت اطلاعات...</b>', 
+        '🔍 <b>در حال بررسی لینک...</b>', 
         reply_markup=reply_markup,
         parse_mode=ParseMode.HTML
     )
@@ -65,11 +65,14 @@ async def handle_youtube_link(update: Update, context: CallbackContext) -> None:
         download_and_upload(youtube_url, chat_id, status_message, context, loop)
     )
 
-def blocking_download_and_process(youtube_url, chat_id, ydl_opts, progress_hook):
+def fetch_info_only(youtube_url, ydl_opts):
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(youtube_url, download=False)
+
+def blocking_download(youtube_url, ydl_opts, progress_hook):
     ydl_opts['progress_hooks'] = [progress_hook]
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info_dict = ydl.extract_info(youtube_url, download=True)
-        return info_dict
+        return ydl.extract_info(youtube_url, download=True)
 
 async def download_and_upload(youtube_url, chat_id, status_message, context, loop):
     global user_states
@@ -77,6 +80,36 @@ async def download_and_upload(youtube_url, chat_id, status_message, context, loo
     thumbnail_path = None
 
     try:
+        ydl_opts_base = {
+            'format': 'bestaudio/best',
+            'proxy': PROXY_URL,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android_creator', 'android'], 
+                    'player_skip': ['webpage', 'configs', 'js'],
+                }
+            },
+            'noplaylist': True,
+            'logger': logger,
+            'nocheckcertificate': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+            }
+        }
+
+        info_dict = await loop.run_in_executor(
+            None, fetch_info_only, youtube_url, ydl_opts_base
+        )
+        
+        if not info_dict: raise Exception("اطلاعات دریافت نشد.")
+
+        duration = info_dict.get('duration', 0)
+        if duration > MAX_DURATION_SECONDS:
+            duration_min = duration // 60
+            limit_min = MAX_DURATION_SECONDS // 60
+            await safe_edit_message(context, status_message, f"❌ <b>خطا:</b> ویدیو {duration_min} دقیقه است.\n(حداکثر مجاز: {limit_min} دقیقه)", parse_mode=ParseMode.HTML)
+            return
+
         def progress_hook_sync(d):
             if not user_states.get(chat_id, {}).get('running'):
                 raise yt_dlp.utils.DownloadError("Cancelled")
@@ -89,15 +122,8 @@ async def download_and_upload(youtube_url, chat_id, status_message, context, loo
             last_update_time[chat_id] = now
             asyncio.run_coroutine_threadsafe(update_status_message(d, status_message, context), loop)
 
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'proxy': PROXY_URL,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android_creator', 'android'], 
-                    'player_skip': ['webpage', 'configs', 'js'],
-                }
-            },
+        ydl_opts_download = ydl_opts_base.copy()
+        ydl_opts_download.update({
             'outtmpl': {'default': '%(title)s.%(ext)s'},
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -105,21 +131,15 @@ async def download_and_upload(youtube_url, chat_id, status_message, context, loo
                 'preferredquality': '320',
             }],
             'writethumbnail': True,
-            'noplaylist': True,
-            'logger': logger,
-            'nocheckcertificate': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-            }
-        }
+        })
+
+        await safe_edit_message(context, status_message, "⬇️ <b>تایید شد. شروع دانلود...</b>", parse_mode=ParseMode.HTML)
 
         info_dict = await loop.run_in_executor(
-            None, blocking_download_and_process, youtube_url, chat_id, ydl_opts, progress_hook_sync
+            None, blocking_download, youtube_url, ydl_opts_download, progress_hook_sync
         )
 
-        if not info_dict: raise Exception("اطلاعات دریافت نشد.")
-            
-        file_name_base = yt_dlp.YoutubeDL(ydl_opts).prepare_filename(info_dict)
+        file_name_base = yt_dlp.YoutubeDL(ydl_opts_download).prepare_filename(info_dict)
         file_name_mp3 = os.path.splitext(file_name_base)[0] + '.mp3'
         
         for ext in ['.webp', '.jpg', '.png']:
@@ -131,24 +151,23 @@ async def download_and_upload(youtube_url, chat_id, status_message, context, loo
         if not os.path.exists(file_name_mp3):
             raise FileNotFoundError("فایل صوتی یافت نشد.")
 
-        if 'duration' in info_dict and info_dict['duration'] > MAX_DURATION_SECONDS:
-            await safe_edit_message(context, status_message, "❌ خطا: فایل بیش از حد طولانی است.")
-            return
-
         raw_title = info_dict.get('title', 'Unknown')
         raw_channel = info_dict.get('uploader', 'Unknown')
-        
         safe_title = html.escape(raw_title)
         safe_channel = html.escape(raw_channel)
+        
+        bot_username = context.bot.username
+        if not bot_username:
+            bot_info = await context.bot.get_me()
+            bot_username = bot_info.username
         
         caption_text = (
             f"🎵 Name: <b>{safe_title}</b>\n"
             f"👤 Channel: <b>{safe_channel}</b>\n"
             f"⚡️ Quality: 320kbps\n\n"
-            f"✨ Downloaded by <b>@ytdownplusbot</b>\n"
+            f"✨ Downloaded by <b>@{bot_username}</b>\n"
             f"🎈 By: <b>@sorblack</b>"
         )
-        # ---------------------------------------
 
         if thumbnail_path:
             await update_status_message({'status': 'uploading_photo'}, status_message, context)
@@ -158,8 +177,9 @@ async def download_and_upload(youtube_url, chat_id, status_message, context, loo
                     photo=photo_file,
                     caption=f"🖼 <b>{safe_title}</b>",
                     parse_mode=ParseMode.HTML,
-                    connect_timeout=60,
-                    read_timeout=60
+                    connect_timeout=300,
+                    read_timeout=300,
+                    write_timeout=300
                 )
 
         if thumbnail_path:
@@ -180,8 +200,9 @@ async def download_and_upload(youtube_url, chat_id, status_message, context, loo
                 duration=info_dict.get('duration'),
                 caption=caption_text,
                 parse_mode=ParseMode.HTML,
-                write_timeout=60,
-                connect_timeout=60
+                write_timeout=300,
+                connect_timeout=300,
+                read_timeout=300
             )
             if thumb_open: thumb_open.close()
         
@@ -193,7 +214,9 @@ async def download_and_upload(youtube_url, chat_id, status_message, context, loo
         error_msg = str(e)
         if "Cancelled" in error_msg: text = "⛔️ عملیات لغو شد."
         elif "Sign in" in error_msg: text = "⚠️ یوتیوب درخواست لاگین دارد."
-        else: text = f"❌ <b>خطا:</b>\n<code>{html.escape(error_msg)}</code>" # ارور هم باید escape شود
+        elif "Timed out" in error_msg: text = "⏳ آپلود به دلیل کندی شبکه زمان‌بر شد (Timeout)."
+        else: text = f"❌ <b>خطا:</b>\n<code>{html.escape(error_msg)}</code>"
+        
         await safe_edit_message(context, status_message, text, parse_mode=ParseMode.HTML)
         logger.error(f"Error: {e}")
         
@@ -227,16 +250,16 @@ async def update_status_message(status_dict, message, context):
         try: percent = float(status_dict.get('_percent_str', '0%').replace('%',''))
         except: percent = 0
         text = (
-            f"⬇️ <b>در حال دانلود از یوتیوب...</b>\n\n"
+            f"⬇️ <b>در حال دانلود...</b>\n\n"
             f"{make_progress_bar(percent)} <b>{percent}%</b>\n"
             f"🚀 سرعت: {status_dict.get('_speed_str', 'N/A')}"
         )
     elif status == 'uploading_photo':
-        text = "🖼 <b>در حال ارسال تصویر کاور...</b>"
+        text = "🖼 <b>در حال ارسال تصویر...</b>"
     elif status == 'embedding':
-        text = "⚙️ <b>در حال تنظیم تگ‌ها و کاور...</b>"
+        text = "⚙️ <b>در حال پردازش نهایی...</b>"
     elif status == 'uploading_audio':
-        text = "📤 <b>در حال آپلود فایل موزیک...</b>"
+        text = "📤 <b>در حال آپلود موزیک...</b>"
     
     if text and message.text != text:
         await safe_edit_message(context, message, text, keep_buttons=True, parse_mode=ParseMode.HTML)
@@ -259,17 +282,17 @@ async def cancel_callback(update: Update, context: CallbackContext) -> None:
 
 def main() -> None:
     if not BOT_TOKEN:
-        print("Error: TOKEN not found. Set TELEGRAM_BOT_TOKEN env variable.")
+        print("Error: TOKEN not found.")
         return
     application = (
         Application.builder().token(BOT_TOKEN)
-        .connect_timeout(60).read_timeout(60).write_timeout(60)
+        .connect_timeout(300).read_timeout(300).write_timeout(300)
         .build()
     )
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_youtube_link))
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(cancel_callback, pattern='^cancel_'))
-    print("Secure Bot is running...")
+    print("Bot is running...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
