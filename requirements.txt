@@ -2,3 +2,5 @@ python-telegram-bot
 yt-dlp
 requests
 mutagen
+beautifulsoup4
+thefuzz
