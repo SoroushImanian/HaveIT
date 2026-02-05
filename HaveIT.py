@@ -28,11 +28,13 @@ from telegram.error import RetryAfter, TimedOut, BadRequest, Forbidden
 import yt_dlp
 
 # --- CONFIGURATION ---
-ALLOWED_CHAT_IDS = [809612055, -1001919485429, 93365812, 114726592]
+ALLOWED_CHAT_IDS = [48744784, -1000382487, 849344494, 112872833]
 MAX_DURATION_SECONDS = 1200
 PROXY_URL = 'socks5://127.0.0.1:3420'
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BASE_DATA_DIR = "Users_Data"
+CACHE_CHANNEL_ID = -100384834782
+CACHE_FILE = os.path.join(BASE_DATA_DIR, "global_cache.json")
 # ---------------------
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -41,7 +43,6 @@ logger = logging.getLogger(__name__)
 active_chats = set()
 last_update_time = {}
 user_states = {}
-
 
 def get_user_folder(user_id):
     path = os.path.join(BASE_DATA_DIR, str(user_id))
@@ -74,6 +75,26 @@ def delete_user_channel(user_id):
         return True
     return False
 
+def load_global_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+        except: return {}
+    return {}
+
+def save_to_global_cache(unique_key, audio_msg_id, photo_msg_id=None):
+    cache = load_global_cache()
+    cache[unique_key] = {
+        'audio': audio_msg_id,
+        'photo': photo_msg_id,
+        'timestamp': time.time()
+    }
+    with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(cache, f, ensure_ascii=False)
+
+def get_from_cache(unique_key):
+    cache = load_global_cache()
+    return cache.get(unique_key)
 
 def human_readable_size(size):
     if not size: return "..."
@@ -310,23 +331,150 @@ async def callback_handler(update: Update, context: CallbackContext):
             audio_id = int(parts[3])
             photo_id = int(parts[4]) if parts[4] != '0' else None
             ch = get_user_channel(user_id)
+            
             if ch:
-                if photo_id: await context.bot.copy_message(chat_id=ch['channel_id'], from_chat_id=q.message.chat_id, message_id=photo_id)
-                await context.bot.copy_message(chat_id=ch['channel_id'], from_chat_id=q.message.chat_id, message_id=audio_id)
+                target_audio = None
+                if q.message.reply_to_message and q.message.reply_to_message.audio:
+                    target_audio = q.message.reply_to_message.audio
+                
+                unique_key = None
+                if target_audio:
+                    clean_a = clean_text_for_search(target_audio.performer or "")
+                    clean_t = clean_text_for_search(target_audio.title or "")
+                    unique_key = f"{clean_a}_{clean_t}"
+
+                history = load_history(user_id)
+                existing_msg_id = history.get(unique_key) if unique_key else None
+                
+                if existing_msg_id:
+                    link = get_message_link(ch['channel_id'], existing_msg_id, ch.get('channel_username'))
+                    
+                    kb = [[InlineKeyboardButton("🔗 Go to Message (Copy Link)", url=link)],
+                          [InlineKeyboardButton("🔙 Back", callback_data=f"restore_menu_{audio_id}_{photo_id or 0}_0")]]
+                    
+                    await q.edit_message_text(
+                        f"⚠️ <b>Duplicate Found!</b>\n\nThis song is already in your channel:\n📢 <b>{html.escape(ch['channel_title'])}</b>\n\nNo need to upload again.",
+                        reply_markup=InlineKeyboardMarkup(kb),
+                        parse_mode=ParseMode.HTML
+                    )
+                    return
+
+                sent_msg = None
+                if photo_id: 
+                    await context.bot.copy_message(chat_id=ch['channel_id'], from_chat_id=q.message.chat_id, message_id=photo_id)
+                
+                sent_msg = await context.bot.copy_message(chat_id=ch['channel_id'], from_chat_id=q.message.chat_id, message_id=audio_id)
+                
+                if unique_key and sent_msg:
+                    save_to_history(user_id, unique_key, sent_msg.message_id)
+
                 await q.answer("✅ Sent!")
-                await q.edit_message_text("✅ <b>Successfully sent to channel.</b>", parse_mode=ParseMode.HTML)
-            else: await q.answer("❌ Channel not found.", show_alert=True)
+                
+                new_link = get_message_link(ch['channel_id'], sent_msg.message_id, ch.get('channel_username'))
+                
+                kb = [[InlineKeyboardButton("🔗 View in Channel", url=new_link)],
+                      [InlineKeyboardButton("🔙 Back to Menu", callback_data=f"restore_menu_{audio_id}_{photo_id or 0}_1")]]
+                
+                await q.edit_message_text(
+                    f"✅ <b>Successfully sent to channel:</b>\n📢 {html.escape(ch['channel_title'])}", 
+                    reply_markup=InlineKeyboardMarkup(kb), 
+                    parse_mode=ParseMode.HTML
+                )
+            else: 
+                await q.answer("❌ Channel not found.", show_alert=True)
         except Exception as e: 
             logger.error(f"Send Error: {e}")
-            await q.answer("❌ Error sending.", show_alert=True)
+            await q.answer("❌ Error sending to channel.", show_alert=True)
+
+    elif data.startswith('restore_menu_'):
+        parts = data.split('_')
+        aid = parts[2]
+        pid = parts[3]
+        is_sent = parts[4] == '1'
+        
+        kb_buttons = []
+        
+        if is_sent:
+            kb_buttons.append([InlineKeyboardButton("✅ Sent to Channel", callback_data="already_sent")])
+        else:
+            kb_buttons.append([InlineKeyboardButton("✅ Send to Channel", callback_data=f'send_to_ch_{aid}_{pid}')])
+            
+        kb_buttons.append([
+            InlineKeyboardButton("📝 Get Lyrics", callback_data=f'get_lyrics_{aid}'),
+            InlineKeyboardButton("❌ Close", callback_data='cancel_send')
+        ])
+        
+        await q.edit_message_text(
+            "File Ready! 👇", 
+            reply_markup=InlineKeyboardMarkup(kb_buttons),
+            parse_mode=ParseMode.HTML
+        )
+
+    elif data == 'already_sent':
+        await q.answer("⚠️ You have already sent this file to the channel.", show_alert=True)
 
     elif data == 'cancel_send': await q.message.delete()
+    
     elif data.startswith('cancel_dl_'):
         chat_id = int(data.split('_')[2])
         if chat_id in user_states:
             user_states[chat_id]['running'] = False
             await q.answer("🛑 Requesting cancel...")
             await q.edit_message_text("⛔️ <b>Operation cancelled by user.</b>", parse_mode=ParseMode.HTML)
+
+    elif data.startswith('get_lyrics_'):
+        try:
+            await q.answer("🔍 Searching Genius & LrcLib...", cache_time=0)
+            
+            audio_msg_id = int(data.split('_')[2])
+            chat_id = q.message.chat_id
+            
+            target_audio = None
+            if q.message.reply_to_message and q.message.reply_to_message.audio:
+                target_audio = q.message.reply_to_message.audio
+            
+            if not target_audio:
+                await q.edit_message_text("❌ Reference audio file not found.", parse_mode=ParseMode.HTML)
+                return
+
+            raw_artist = target_audio.performer or ""
+            raw_title = target_audio.title or ""
+            
+            lyrics, source = await asyncio.get_running_loop().run_in_executor(
+                None, get_lyrics_smart, raw_artist, raw_title
+            )
+            
+            if lyrics:
+                header = f"🎤 <b>{html.escape(raw_title)}</b>\n\n"
+                footer = f"\n\n✅ Source: <b>{source}</b>"
+                
+                if len(lyrics) > 3000:
+                    with open("Lyrics.txt", "w", encoding="utf-8") as f:
+                        f.write(f"{raw_artist} - {raw_title}\nSource: {source}\n\n{lyrics}")
+                    with open("Lyrics.txt", "rb") as f:
+                        await context.bot.send_document(
+                            chat_id=chat_id, document=f, caption="📝 Full Lyrics File", reply_to_message_id=audio_msg_id
+                        )
+                    os.remove("Lyrics.txt")
+                else:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=header + f"<code>{html.escape(lyrics)}</code>" + footer,
+                        parse_mode=ParseMode.HTML,
+                        reply_to_message_id=audio_msg_id
+                    )
+            else:
+                clean_q = clean_text_for_search(raw_title)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ Lyrics not found.\n\nI searched for:\n<b>{html.escape(clean_q)}</b>\n\nDatabase returned no results (Maybe instrumental?).",
+                    parse_mode=ParseMode.HTML,
+                    reply_to_message_id=audio_msg_id
+                )
+
+        except Exception as e:
+            logger.error(f"Lyrics Error: {e}")
+            await q.answer("❌ Search Error.", show_alert=True)
 
 
 async def handle_message(update: Update, context: CallbackContext):
@@ -351,192 +499,354 @@ async def handle_message(update: Update, context: CallbackContext):
         status = await msg.reply_text(f"🔍 <b>Checking {platform} link...</b>", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
         asyncio.create_task(process_media(text, platform, chat_id, status, context, msg))
 
+
+def clean_text_for_search(text):
+    """
+    V6 Cleaner: Handles Nightcore brackets, years, genres, and splits features.
+    """
+    if not text: return ""
+    text = str(text)
+    
+    text = re.sub(r'[\(\[\u300c].*?[\)\]\u300d]', '', text)
+    
+    text = re.sub(r'\b(19|20)\d{2}\b', '', text)
+    
+    junk_words = [
+        'official video', 'official music video', 'official audio', 
+        'lyrics', 'lyric video', 'visualizer', 'remastered', 'remaster',
+        '4k', 'hd', 'hq', 'mv', 'cover', 'live', 'mix', 'original mix',
+        'extended mix', 'club mix', 'uplifting trance', 'trance', 'house',
+        'dubstep', 'techno', 'pop', 'rap', 'nightcore', 'slowed', 'reverb'
+    ]
+    
+    lower_text = text.lower()
+    for junk in junk_words:
+        if junk in lower_text:
+            pattern = re.compile(re.escape(junk), re.IGNORECASE)
+            text = pattern.sub('', text)
+
+    text = re.sub(r'(?i)\b(ft\.?|feat\.?|featuring|prod\.?|with|by|x)\b.*', '', text)
+    
+    text = text.replace('"', '').replace("'", "").replace("|", "").replace("_", " ").replace("-", " ")
+    
+    return " ".join(text.split())
+
+def check_similarity(input_str, result_str):
+    """
+    Verifies if the result matches the request.
+    Returns True if similarity is acceptable (>60%).
+    """
+    if not input_str or not result_str: return False
+    ratio = fuzz.token_set_ratio(input_str.lower(), result_str.lower())
+    return ratio >= 60
+
+def search_genius_direct(query):
+    """ Source 2: Genius Search """
+    try:
+        url = "https://genius.com/api/search/multi"
+        params = {'q': query, 'per_page': '1'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            for section in data.get('response', {}).get('sections', []):
+                if section.get('type') in ['top_results', 'song'] and section.get('hits'):
+                    hit = section['hits'][0]['result']
+                    page_url = f"https://genius.com{hit['path']}"
+                    page_resp = requests.get(page_url, headers=headers, timeout=5)
+                    if page_resp.status_code == 200:
+                        soup = BeautifulSoup(page_resp.content, 'html.parser')
+                        lyrics_divs = soup.find_all('div', {'data-lyrics-container': 'true'})
+                        if lyrics_divs:
+                            return "\n".join([div.get_text(separator="\n") for div in lyrics_divs]), "Genius.com"
+    except: pass
+    return None, None
+
+def cleanup_files(file_mp3, thumb_path, stem):
+    try:
+        if file_mp3 and os.path.exists(file_mp3): os.remove(file_mp3)
+        if thumb_path and os.path.exists(thumb_path): os.remove(thumb_path)
+        if stem:
+            for f in glob.glob(f"{glob.escape(stem)}*"):
+                try: os.remove(f)
+                except: pass
+    except Exception as e:
+        print(f"Cleanup Error: {e}")
+
 async def process_media(url, platform, chat_id, status_msg, context, origin_msg):
     loop = asyncio.get_running_loop()
     display_source_name = "Unknown" 
     file_name_mp3 = None
     thumbnail_path = None
     filename_stem = None
+    unique_key = None
+    info_dict = None 
+    
+    final_audio_msg = None
+    final_photo_msg = None
 
-    def cleanup_now():
-        """Cleans up all associated files (main, part, temp, cover)."""
-        try:
-            if file_name_mp3 and os.path.exists(file_name_mp3): os.remove(file_name_mp3)
-            if thumbnail_path and os.path.exists(thumbnail_path): os.remove(thumbnail_path)
-
-            if filename_stem:
-                search_pattern = f"{glob.escape(filename_stem)}*"
-                found_files = glob.glob(search_pattern)
-                for f in found_files:
-                    try:
-                        if os.path.exists(f): os.remove(f)
-                    except: pass
-        except Exception as e:
-            print(f"Cleanup Error: {e}")
+    cache_audio_id = None
+    cache_photo_id = None
+    
+    freshly_downloaded_photo = False
+    freshly_downloaded_audio = False
 
     try:
         download_target = url
         
         if platform == "Spotify":
-            await safe_edit(status_msg, "🟢 <b>Extracting metadata from Spotify...</b>", chat_id)
+            await safe_edit(status_msg, "🟢 <b>Processing...</b>", chat_id)
             song, artist = await loop.run_in_executor(None, get_spotify_metadata, url)
             if song:
                 display_source_name = artist 
-                await safe_edit(status_msg, f"🔎 <b>Smart searching for original version...</b>\n🎶 {artist} - {song}", chat_id)
-                temp_opts = {'proxy': PROXY_URL, 'quiet': True, 'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}}
+                clean_a = clean_text_for_search(artist)
+                clean_t = clean_text_for_search(song)
+                unique_key = f"{clean_a}_{clean_t}"
+                
+                await safe_edit(status_msg, f"🔎 <b>Search:</b>\n🎶 {artist} - {song}", chat_id)
+                temp_opts = {
+                    'proxy': PROXY_URL, 
+                    'quiet': True, 
+                    'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+                }
                 best = await loop.run_in_executor(None, smart_find_best_match, song, artist, temp_opts)
                 download_target = best if best else f"ytsearch1:{artist} - {song} Audio"
-            else: raise Exception("Spotify link could not be read.")
+            else: 
+                raise Exception("Invalid Spotify Link")
 
-        for attempt in range(1, 4): 
+        if unique_key and CACHE_CHANNEL_ID:
+            cached_data = get_from_cache(unique_key)
+            if cached_data:
+                cache_audio_id = cached_data.get('audio')
+                cache_photo_id = cached_data.get('photo')
+
+        if cache_photo_id:
             try:
-                if not user_states.get(chat_id, {}).get('running'): raise yt_dlp.utils.DownloadError("Cancelled")
+                final_photo_msg = await context.bot.copy_message(chat_id, CACHE_CHANNEL_ID, cache_photo_id)
+            except:
+                final_photo_msg = None
 
-                ydl_opts_base = {
-                    'format': 'bestaudio/best', 'proxy': PROXY_URL, 'noplaylist': True, 'writethumbnail': True,
-                    'nocheckcertificate': True, 'outtmpl': {'default': '%(title)s.%(ext)s'},
-                    'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '320'}],
-                    'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
-                    'http_headers': {'User-Agent': 'Mozilla/5.0'}
-                }
-                
-                info_dict = await loop.run_in_executor(
-                    None, lambda: yt_dlp.YoutubeDL(ydl_opts_base).extract_info(download_target, download=False)
-                )
-                
-                if 'entries' in info_dict: info_dict = info_dict['entries'][0]
-                if not info_dict: raise Exception("Information not received.")
-
-                full_filename = yt_dlp.YoutubeDL(ydl_opts_base).prepare_filename(info_dict)
-                filename_stem = os.path.splitext(full_filename)[0]
-                file_name_mp3 = filename_stem + '.mp3'
-
-                duration = info_dict.get('duration', 0)
-                if duration > MAX_DURATION_SECONDS:
-                    duration_min = duration // 60
-                    limit_min = MAX_DURATION_SECONDS // 60
-                    await safe_edit(status_msg, f"❌ <b>Error:</b> Video is {duration_min} minutes long.\n(Max allowed: {limit_min} minutes)", chat_id, remove_keyboard=True)
-                    cleanup_now()
-                    if chat_id in active_chats: active_chats.remove(chat_id)
-                    if chat_id in user_states: del user_states[chat_id]
-                    return
-
-                def hook(d):
-                    if not user_states.get(chat_id, {}).get('running'): raise yt_dlp.utils.DownloadError("Cancelled")
-                    now = time.time()
-                    if chat_id in last_update_time:
-                        if now - last_update_time[chat_id] < 3.0 and d['status'] == 'downloading': return
-                    last_update_time[chat_id] = now
-                    asyncio.run_coroutine_threadsafe(update_status_message(d, status_msg, chat_id), loop)
-                
-                if attempt == 1:
-                    await safe_edit(status_msg, "⬇️ <b>Confirmed. Starting download...</b>", chat_id)
-                else: 
-                    await safe_edit(status_msg, "🔄 <b>Retrying with new IP (Auto-Heal)...</b>", chat_id)
-
-                await loop.run_in_executor(None, blocking_download, download_target, ydl_opts_base, hook)
-                break
-
-            except Exception as e:
-                error_msg = str(e)
-                
-                if "Cancelled" in error_msg: 
-                    await safe_edit(status_msg, "⛔️ <b>Operation cancelled.</b>", chat_id, remove_keyboard=True)
-                    await asyncio.sleep(1)
-                    cleanup_now()
-                    
-                    if chat_id in active_chats: active_chats.remove(chat_id)
-                    if chat_id in user_states: del user_states[chat_id]
-                    return 
-
-                if "Sign in" in error_msg or "429" in error_msg or "unavailable" in error_msg or "403" in error_msg or "Forbidden" in error_msg:
-                    if attempt < 3: 
-                        await safe_edit(status_msg, "⚠️ <b>Network error detected.</b>\n🛠 Diagnosing and switching secure network path (Auto-Fix)...", chat_id)
-                        await loop.run_in_executor(None, rotate_warp_ip)
-                        continue 
-                
-                text = f"❌ <b>Error:</b>\n<code>{html.escape(error_msg)}</code>"
-                if "Sign in" in error_msg: text = "❌ Auto-attempt failed. YouTube denied access."
-                elif "Timed out" in error_msg: text = "⏳ Upload timed out."
-                
-                await safe_edit(status_msg, text, chat_id, remove_keyboard=True)
-                cleanup_now()
-                logger.error(f"Error: {e}")
-                
-                if chat_id in active_chats: active_chats.remove(chat_id)
-                if chat_id in user_states: del user_states[chat_id]
-                return
-
-        if not user_states.get(chat_id, {}).get('running'): raise yt_dlp.utils.DownloadError("Cancelled")
-        if not file_name_mp3 or not os.path.exists(file_name_mp3): raise Exception("Download failed.") 
-
-        for ext in ['.webp', '.jpg', '.png']:
-            possible_thumb = filename_stem + ext
-            if os.path.exists(possible_thumb): 
-                thumbnail_path = possible_thumb
-                break
-
-        if platform != "Spotify":
-            raw_uploader = info_dict.get('uploader', '') or info_dict.get('channel', 'Unknown')
-            display_source_name = raw_uploader.replace(" - Topic", "").replace("VEVO", "").replace("Official", "").strip()
-
-        if thumbnail_path: await loop.run_in_executor(None, embed_cover, file_name_mp3, thumbnail_path, info_dict, display_source_name)
-
-        await safe_edit(status_msg, "📤 <b>Uploading to Telegram...</b>", chat_id)
-        
-        title = info_dict.get('title', 'Unknown')
-        safe_title = html.escape(title)
-        safe_source = html.escape(display_source_name)
-        
-        caption = (
-            f"🎵 Name: <b>{safe_title}</b>\n"
-            f"👤 Artist/Source: <b>{safe_source}</b>\n"
-            f"📱 Platform: <b>{platform}</b>\n"
-            f"⚡️ Quality: 320kbps\n\n"
-            f"✨ Downloaded by <b>@{context.bot.username}</b>\n"
-            f"🎈 By: <b>@sorblack</b>"
-        )
-        
-        sent_photo = None
-        if thumbnail_path:
-            with open(thumbnail_path, 'rb') as photo_file:
-                sent_photo = await context.bot.send_photo(
-                    chat_id=chat_id, photo=photo_file, caption=f"🖼 <b>{safe_title}</b>", parse_mode=ParseMode.HTML, connect_timeout=300, read_timeout=300
-                )
-
-        with open(file_name_mp3, 'rb') as f:
-            th = open(thumbnail_path, 'rb') if thumbnail_path else None
-            sent_audio = await context.bot.send_audio(
-                chat_id=chat_id, audio=f, thumbnail=th, title=title, performer=safe_source, caption=caption, parse_mode=ParseMode.HTML, read_timeout=300, write_timeout=300
-            )
-            if th: th.close()
+        if not final_photo_msg:
+            await safe_edit(status_msg, "🖼 <b>Fetching Cover...</b>", chat_id)
             
+            for attempt in range(1, 4):
+                try:
+                    ydl_opts_photo = {
+                        'format': 'bestaudio/best', 
+                        'proxy': PROXY_URL, 
+                        'noplaylist': True, 
+                        'writethumbnail': True, 
+                        'skip_download': True,
+                        'nocheckcertificate': True, 
+                        'outtmpl': {'default': '%(title)s.%(ext)s'},
+                        'source_address': '0.0.0.0', 
+                        'cachedir': False,
+                        'extractor_args': {'youtube': {'player_client': ['android']}},
+                        'http_headers': {'User-Agent': 'Mozilla/5.0'}
+                    }
+                    
+                    if not unique_key:
+                        info_temp = await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts_photo).extract_info(download_target, download=False))
+                        if 'entries' in info_temp: info_temp = info_temp['entries'][0]
+                        
+                        raw_a = clean_text_for_search(info_temp.get('uploader', ''))
+                        raw_t = clean_text_for_search(info_temp.get('title', ''))
+                        if " - " in info_temp.get('title', ''):
+                            parts = info_temp['title'].split(" - ", 1)
+                            raw_a = clean_text_for_search(parts[0])
+                            raw_t = clean_text_for_search(parts[1])
+                        
+                        unique_key = f"{raw_a}_{raw_t}"
+
+                        if CACHE_CHANNEL_ID:
+                            c_new = get_from_cache(unique_key)
+                            if c_new:
+                                cache_audio_id = c_new.get('audio')
+                                if c_new.get('photo') and not final_photo_msg:
+                                    try:
+                                        final_photo_msg = await context.bot.copy_message(chat_id, CACHE_CHANNEL_ID, c_new['photo'])
+                                        cache_photo_id = c_new.get('photo')
+                                        break
+                                    except: pass
+
+                    dl_info = await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts_photo).extract_info(download_target, download=True))
+                    if 'entries' in dl_info: dl_info = dl_info['entries'][0]
+                    info_dict = dl_info
+                    
+                    full_filename = yt_dlp.YoutubeDL(ydl_opts_photo).prepare_filename(dl_info)
+                    filename_stem = os.path.splitext(full_filename)[0]
+                    
+                    for ext in ['.webp', '.jpg', '.png']:
+                        if os.path.exists(filename_stem + ext): 
+                            thumbnail_path = filename_stem + ext
+                            break
+                    
+                    freshly_downloaded_photo = True
+                    break
+                except Exception as e:
+                    await asyncio.sleep(1)
+
+            if not final_photo_msg and thumbnail_path and os.path.exists(thumbnail_path):
+                t_title = info_dict.get('title', 'Music') if info_dict else "Music"
+                with open(thumbnail_path, 'rb') as f:
+                    final_photo_msg = await context.bot.send_photo(chat_id, f, caption=f"🖼 <b>{html.escape(t_title)}</b>", parse_mode=ParseMode.HTML)
+
+        if cache_audio_id and not final_audio_msg:
+            try:
+                final_audio_msg = await context.bot.copy_message(chat_id, CACHE_CHANNEL_ID, cache_audio_id)
+            except:
+                final_audio_msg = None
+
+        if not final_audio_msg:
+            for attempt in range(1, 4):
+                try:
+                    if not user_states.get(chat_id, {}).get('running'): raise Exception("Cancelled")
+                    
+                    await safe_edit(status_msg, "⬇️ <b>Downloading Audio...</b>", chat_id)
+                    
+                    ydl_opts_audio = {
+                        'format': 'bestaudio/best', 'proxy': PROXY_URL, 'noplaylist': True, 
+                        'writethumbnail': False,
+                        'nocheckcertificate': True, 'outtmpl': {'default': '%(title)s.%(ext)s'},
+                        'source_address': '0.0.0.0', 'cachedir': False,
+                        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+                        'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '320'}],
+                        'http_headers': {'User-Agent': 'Mozilla/5.0'}
+                    }
+
+                    def hook(d):
+                        if not user_states.get(chat_id, {}).get('running'): raise yt_dlp.utils.DownloadError("Cancelled")
+                        now = time.time()
+                        if chat_id in last_update_time:
+                            if now - last_update_time[chat_id] < 3.0 and d['status'] == 'downloading': return
+                        last_update_time[chat_id] = now
+                        asyncio.run_coroutine_threadsafe(update_status_message(d, status_msg, chat_id), loop)
+
+                    dl_info = await loop.run_in_executor(None, blocking_download, download_target, ydl_opts_audio, hook)
+                    if 'entries' in dl_info: dl_info = dl_info['entries'][0]
+                    info_dict = dl_info
+                    
+                    full_filename = yt_dlp.YoutubeDL(ydl_opts_audio).prepare_filename(dl_info)
+                    filename_stem = os.path.splitext(full_filename)[0]
+                    file_name_mp3 = filename_stem + '.mp3'
+                    
+                    if dl_info.get('duration', 0) > MAX_DURATION_SECONDS:
+                        await safe_edit(status_msg, f"❌ Too long.", chat_id, remove_keyboard=True)
+                        cleanup_files(file_name_mp3, thumbnail_path, filename_stem)
+                        return
+
+                    freshly_downloaded_audio = True
+                    break
+                except Exception as e:
+                    if "Cancelled" in str(e): 
+                        cleanup_files(file_name_mp3, thumbnail_path, filename_stem)
+                        return
+                    if attempt == 3: 
+                        await safe_edit(status_msg, f"❌ Error: {e}", chat_id, remove_keyboard=True)
+                        cleanup_files(file_name_mp3, thumbnail_path, filename_stem)
+                        return
+                    await loop.run_in_executor(None, rotate_warp_ip)
+
+            if not final_audio_msg and file_name_mp3 and os.path.exists(file_name_mp3):
+                final_title = info_dict.get('title', 'Unknown Track')
+                final_artist = display_source_name
+                if platform != "Spotify":
+                    raw_ch = info_dict.get('uploader', '') or info_dict.get('channel', 'Unknown')
+                    final_artist = raw_ch.replace(" - Topic", "").replace("VEVO", "").replace("Official", "").strip()
+                    if " - " in final_title:
+                        parts = final_title.split(" - ", 1)
+                        if len(parts[0]) < 50: 
+                            final_artist = parts[0].strip()
+                            final_title = parts[1].strip()
+
+                safe_title = html.escape(final_title)
+                safe_artist = html.escape(final_artist)
+                caption = (f"🎵 Name: <b>{safe_title}</b>\n👤 Artist/Source: <b>{safe_artist}</b>\n"
+                           f"📱 Platform: <b>{platform}</b>\n⚡️ Quality: 320kbps\n\n"
+                           f"✨ Downloaded by <b>@{context.bot.username}</b>\n🎈 By: <b>@sorblack</b>")
+
+                await safe_edit(status_msg, "📤 <b>Uploading...</b>", chat_id)
+                
+                if thumbnail_path: 
+                    await loop.run_in_executor(None, embed_cover, file_name_mp3, thumbnail_path, info_dict, final_artist)
+                
+                with open(file_name_mp3, 'rb') as f:
+                    th = open(thumbnail_path, 'rb') if thumbnail_path else None
+                    final_audio_msg = await context.bot.send_audio(
+                        chat_id, f, thumbnail=th, 
+                        title=final_title, performer=final_artist, caption=caption, parse_mode=ParseMode.HTML
+                    )
+                    if th: th.close()
+
+        if CACHE_CHANNEL_ID and unique_key:
+
+            needs_repair = freshly_downloaded_photo or freshly_downloaded_audio
+            
+            if needs_repair:
+
+                if cache_audio_id: 
+                    try: await context.bot.delete_message(CACHE_CHANNEL_ID, cache_audio_id)
+                    except: pass
+                if cache_photo_id: 
+                    try: await context.bot.delete_message(CACHE_CHANNEL_ID, cache_photo_id)
+                    except: pass
+                
+                new_db_p = None
+                new_db_a = None
+                
+                if final_photo_msg:
+                    try:
+                        bk_p = await context.bot.copy_message(CACHE_CHANNEL_ID, chat_id, final_photo_msg.message_id)
+                        new_db_p = bk_p.message_id
+                    except: pass
+                
+                if final_audio_msg:
+                    try:
+                        bk_a = await context.bot.copy_message(CACHE_CHANNEL_ID, chat_id, final_audio_msg.message_id)
+                        new_db_a = bk_a.message_id
+                    except: pass
+                
+                if new_db_a:
+                    save_to_global_cache(unique_key, new_db_a, new_db_p)
+
         try: await status_msg.delete()
         except: pass
-
+        
+        kb_buttons = []
         if origin_msg.chat.type == ChatType.PRIVATE:
             ch = get_user_channel(origin_msg.from_user.id)
             if ch:
-                pid = sent_photo.message_id if sent_photo else 0
-                aid = sent_audio.message_id
-                kb = [[InlineKeyboardButton("✅ Send to Channel", callback_data=f'send_to_ch_{aid}_{pid}'), InlineKeyboardButton("Close", callback_data='cancel_send')]]
-                await context.bot.send_message(chat_id, f"Send to <b>{ch['channel_title']}</b>?", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML, reply_to_message_id=sent_audio.message_id)
+                if final_audio_msg:
+                    kb_buttons.append([InlineKeyboardButton("✅ Send to Channel", callback_data=f'send_to_ch_{final_audio_msg.message_id}_0')])
             else:
-                kb = [[InlineKeyboardButton("Set Channel", callback_data='settings_home')]]
-                await context.bot.send_message(chat_id, "💡 Channel is not set.", reply_markup=InlineKeyboardMarkup(kb))
+                kb_buttons.append([InlineKeyboardButton("Set Channel", callback_data='settings_home')])
+
+        if final_audio_msg:
+            kb_buttons.append([
+                InlineKeyboardButton("📝 Get Lyrics", callback_data=f'get_lyrics_{final_audio_msg.message_id}'),
+                InlineKeyboardButton("Close", callback_data='cancel_send')
+            ])
+
+            await context.bot.send_message(
+                chat_id, 
+                f"File Ready! 👇", 
+                reply_markup=InlineKeyboardMarkup(kb_buttons), 
+                parse_mode=ParseMode.HTML, 
+                reply_to_message_id=final_audio_msg.message_id
+            )
+        else:
+            await safe_edit(status_msg, "❌ <b>Download Failed.</b>", chat_id, remove_keyboard=True)
 
     except Exception as e:
         if "Cancelled" in str(e):
-            await safe_edit(status_msg, "⛔️ <b>Operation cancelled.</b>", chat_id, remove_keyboard=True)
-            cleanup_now()
+            await safe_edit(status_msg, "⛔️ <b>Cancelled.</b>", chat_id, remove_keyboard=True)
         else:
             await safe_edit(status_msg, f"❌ Error: {e}", chat_id, remove_keyboard=True)
             logger.error(e)
-            cleanup_now()
             
     finally:
-        cleanup_now()
-        
+        cleanup_files(file_name_mp3, thumbnail_path, filename_stem)
         if chat_id in active_chats: active_chats.remove(chat_id)
         if chat_id in user_states: del user_states[chat_id]
 
@@ -631,6 +941,91 @@ async def safe_edit(message, text, chat_id, remove_keyboard=False):
         await message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
     except RetryAfter as e: await asyncio.sleep(e.retry_after)
     except Exception: pass
+
+def get_history_file(user_id):
+    return os.path.join(get_user_folder(user_id), "history.json")
+
+def load_history(user_id):
+    try:
+        with open(get_history_file(user_id), 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except: return {}
+
+def save_to_history(user_id, unique_key, message_id):
+    """Saves song signature and channel message ID"""
+    hist = load_history(user_id)
+    hist[unique_key] = message_id
+    with open(get_history_file(user_id), 'w', encoding='utf-8') as f:
+        json.dump(hist, f, ensure_ascii=False)
+
+def get_message_link(chat_id, message_id, username=None):
+    """Generates a direct link to a message in a channel"""
+    if username:
+        return f"https://t.me/{username}/{message_id}"
+    else:
+        clean_id = str(chat_id).replace("-100", "")
+        return f"https://t.me/c/{clean_id}/{message_id}"
+
+def get_lyrics_smart(artist, title):
+    """
+    V6 Engine: With STRICT Verification to avoid garbage results.
+    """
+    clean_artist = clean_text_for_search(artist)
+    clean_title = clean_text_for_search(title)
+    
+    if " - " in title:
+        parts = title.split(" - ", 1)
+        potential_artist = clean_text_for_search(parts[0])
+        potential_title = clean_text_for_search(parts[1])
+        
+        if re.search(r'[a-zA-Z]', potential_artist):
+             clean_artist = potential_artist
+        clean_title = potential_title
+
+    clean_title_en = re.sub(r'[^\x00-\x7F]+', '', clean_title).strip()
+    clean_artist_en = re.sub(r'[^\x00-\x7F]+', '', clean_artist).strip()
+    
+    queries = []
+    if clean_artist_en and clean_title_en:
+        queries.append(f"{clean_artist_en} {clean_title_en}")
+    
+    if clean_title_en:
+        queries.append(clean_title_en)
+
+    logger.info(f"Searching: {queries}")
+
+    for query in queries:
+        if len(query) < 2: continue
+
+        try:
+            url = "https://lrclib.net/api/search"
+            params = {'q': query}
+            resp = requests.get(url, params=params, timeout=4)
+            if resp.status_code == 200:
+                results = resp.json()
+                if results and isinstance(results, list):
+                    for track in results[:3]:
+                        if track.get('instrumental'): continue
+                        
+                        res_artist = track.get('artistName', '')
+                        res_track = track.get('trackName', '')
+                        
+                        if clean_artist_en and len(clean_artist_en) > 2:
+                            if not check_similarity(clean_artist_en, res_artist):
+                                continue
+                        
+                        if not check_similarity(clean_title_en, res_track):
+                            continue
+
+                        if track.get('syncedLyrics'): return track['syncedLyrics'], "LrcLib (Synced)"
+                        if track.get('plainLyrics'): return track['plainLyrics'], "LrcLib (Plain)"
+        except: pass
+
+        if clean_artist_en in query and len(query) > 5: 
+            lyrics, source = search_genius_direct(query)
+            if lyrics: return lyrics, source
+
+    return None, None
 
 def main():
     if not BOT_TOKEN: return
