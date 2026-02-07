@@ -28,12 +28,12 @@ from telegram.error import RetryAfter, TimedOut, BadRequest, Forbidden
 import yt_dlp
 
 # --- CONFIGURATION ---
-ALLOWED_CHAT_IDS = [809611155, -1001919409429, 93389812, 110725592]
+ALLOWED_CHAT_IDS = [809612055, -1001919485429, 93365812, 114726592]
 MAX_DURATION_SECONDS = 1200
 PROXY_URL = 'socks5://127.0.0.1:3420'
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BASE_DATA_DIR = "Users_Data"
-CACHE_CHANNEL_ID = -100384683897
+CACHE_CHANNEL_ID = -1003848388297
 CACHE_FILE = os.path.join(BASE_DATA_DIR, "global_cache.json")
 # ---------------------
 
@@ -117,18 +117,27 @@ def human_readable_time(seconds):
 
 
 def rotate_warp_ip():
-    """Disconnects and Reconnects Warp to get a fresh IP."""
-    try:
-        # logger.info("♻️ Rotating Warp IP...")
-        subprocess.run(['warp-cli', 'disconnect'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        time.sleep(2)
-        subprocess.run(['warp-cli', 'connect'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        time.sleep(5)
-        print("✅ [AUTO-HEAL] New IP Assigned Successfully.\n")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Failed to rotate IP: {e}")
-        return False
+    """
+    IP Warp spins in a loop until a healthy connection is established.
+    """
+    attempt = 1
+    while True:
+        try:
+            subprocess.run(['warp-cli', 'disconnect'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            time.sleep(3)
+            
+            subprocess.run(['warp-cli', 'connect'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            time.sleep(6)
+            
+            requests.get("https://www.google.com", proxies={'http': PROXY_URL, 'https': PROXY_URL}, timeout=5)
+            
+            print(f"✅ [AUTO-HEAL] New IP Assigned Successfully after {attempt} attempts.\n")
+            return True
+
+        except Exception as e:
+            logger.error(f"⚠️ IP Rotation failed (Attempt {attempt}): {e}")
+            attempt += 1
+            time.sleep(10)
 
 def get_spotify_metadata(url):
     try:
@@ -241,15 +250,18 @@ async def on_my_chat_member_update(update: Update, context: CallbackContext):
 
 
 START_TEXT = (
-    "🎧 <b>Smart Music Assistant</b>\n\n"
-    "Send your link from the following services:\n"
-    "\n"
-    "🔴 YouTube\n"
-    "🟢 Spotify\n"
-    "🟠 SoundCloud\n\n"
-    "I am equipped with a smart search engine.\n"
-    "I download for you with the highest possible quality (320kbps)!\n\n"
-    "To connect to a channel (even private), tap the Settings button."
+    "👋 <b>Welcome to your Premium Music Hub!</b>\n\n"
+    "I am here to convert your requests into high-quality audio files instantly.\n\n"
+    "<b>🚀 How to use me:</b>\n"
+    "1️⃣ <b>Just Search:</b> Type <code>Song Name - Artist</code> (e.g., <i>Mockingbird - Eminem</i>).\n"
+    "2️⃣ <b>Send a Link:</b> YouTube, Spotify, or SoundCloud URLs.\n\n"
+    "<b>💎 Core Features:</b>\n"
+    "├ ⚡️ Quality: <b>320kbps MP3</b>\n"
+    "├ 🔍 Engine: <b>Smart Auto-Search</b>\n"
+    "├ 🖼 Metadata: <b>Original Cover & Tags</b>\n"
+    "└ 📝 Lyrics: <b>Auto-fetched text</b>\n\n"
+    "👇 <i>Type a song name or paste a link to start!</i>\n"
+    "⚙️ <i>Tap /settings to connect your channel.</i>"
 )
 
 async def start(update: Update, context: CallbackContext) -> None:
