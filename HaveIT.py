@@ -330,23 +330,19 @@ async def callback_handler(update: Update, context: CallbackContext):
         try:
             parts = data.split('_')
             audio_id = int(parts[3])
-            # اصلاح: تبدیل دقیق آیدی عکس
             photo_id = int(parts[4]) if parts[4] != '0' else None
             
             ch = get_user_channel(user_id)
             
             if ch:
-                # 1. اول تلاش برای ارسال عکس (اگر وجود دارد)
                 if photo_id: 
                     try: 
                         await context.bot.copy_message(chat_id=ch['channel_id'], from_chat_id=q.message.chat_id, message_id=photo_id)
                     except Exception as e: 
-                        logger.error(f"Banner Send Error: {e}") # اگر عکس نشد، ادامه بده و آهنگ رو بفرست
+                        logger.error(f"Banner Send Error: {e}")
                 
-                # 2. ارسال آهنگ و دریافت نتیجه
                 sent_msg = await context.bot.copy_message(chat_id=ch['channel_id'], from_chat_id=q.message.chat_id, message_id=audio_id)
                 
-                # ذخیره در هیستوری
                 target_audio = q.message.reply_to_message.audio if q.message.reply_to_message else None
                 if target_audio:
                     clean_a = clean_text_for_search(target_audio.performer or "")
@@ -356,11 +352,8 @@ async def callback_handler(update: Update, context: CallbackContext):
 
                 await q.answer("✅ Sent!")
                 
-                # ساخت لینک جدید
                 new_link = get_message_link(ch['channel_id'], sent_msg.message_id, ch.get('channel_username'))
                 
-                # نکته مهم: آیدی پیام ارسال شده (sent_msg.message_id) را در دکمه بازگشت ذخیره میکنیم
-                # فرمت جدید: restore_menu_AudioID_PhotoID_SentMessageID
                 kb = [[InlineKeyboardButton("🔗 View in Channel", url=new_link)],
                       [InlineKeyboardButton("🔙 Back to Menu", callback_data=f"restore_menu_{audio_id}_{photo_id or 0}_{sent_msg.message_id}")]]
                 
@@ -380,19 +373,15 @@ async def callback_handler(update: Update, context: CallbackContext):
         aid = parts[2]
         pid = parts[3]
         
-        # گرفتن آیدی پیام ارسال شده (اگر قبلا ارسال شده باشد)
-        # اگر عدد بزرگتر از 1 باشد یعنی آیدی پیام است، اگر 0 یا 1 باشد یعنی فلگ قدیمی
         sent_msg_id = int(parts[4]) if len(parts) > 4 else 0
         
         kb_buttons = []
         ch = get_user_channel(user_id)
         
-        # اگر پیام قبلاً ارسال شده (آیدی معتبر داریم) و کانال هنوز هست
         if sent_msg_id > 1 and ch:
             link = get_message_link(ch['channel_id'], sent_msg_id, ch.get('channel_username'))
             kb_buttons.append([InlineKeyboardButton("🔗 View in Channel", url=link)])
         else:
-            # اگر هنوز ارسال نشده یا آیدی نداریم، دکمه ارسال را نشان بده
             kb_buttons.append([InlineKeyboardButton("✅ Send to Channel", callback_data=f'send_to_ch_{aid}_{pid}')])
             
         kb_buttons.append([
