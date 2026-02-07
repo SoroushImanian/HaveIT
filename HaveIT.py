@@ -28,12 +28,12 @@ from telegram.error import RetryAfter, TimedOut, BadRequest, Forbidden
 import yt_dlp
 
 # --- CONFIGURATION ---
-ALLOWED_CHAT_IDS = [809612055, -1001919485429, 93365812, 114726592]
+ALLOWED_CHAT_IDS = [809611155, -1001919409429, 93389812, 110725592]
 MAX_DURATION_SECONDS = 1200
 PROXY_URL = 'socks5://127.0.0.1:3420'
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BASE_DATA_DIR = "Users_Data"
-CACHE_CHANNEL_ID = -1003848388297
+CACHE_CHANNEL_ID = -100384683897
 CACHE_FILE = os.path.join(BASE_DATA_DIR, "global_cache.json")
 # ---------------------
 
