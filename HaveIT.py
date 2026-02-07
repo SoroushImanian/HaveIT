@@ -28,12 +28,12 @@ from telegram.error import RetryAfter, TimedOut, BadRequest, Forbidden
 import yt_dlp
 
 # --- CONFIGURATION ---
-ALLOWED_CHAT_IDS = [48744784, -1000382487, 849344494, 112872833]
+ALLOWED_CHAT_IDS = [809612055, -1001919485429, 93365812, 114726592]
 MAX_DURATION_SECONDS = 1200
 PROXY_URL = 'socks5://127.0.0.1:3420'
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BASE_DATA_DIR = "Users_Data"
-CACHE_CHANNEL_ID = -100384834782
+CACHE_CHANNEL_ID = -1003848388297
 CACHE_FILE = os.path.join(BASE_DATA_DIR, "global_cache.json")
 # ---------------------
 
@@ -243,6 +243,7 @@ async def on_my_chat_member_update(update: Update, context: CallbackContext):
 START_TEXT = (
     "🎧 <b>Smart Music Assistant</b>\n\n"
     "Send your link from the following services:\n"
+    "\n"
     "🔴 YouTube\n"
     "🟢 Spotify\n"
     "🟠 SoundCloud\n\n"
@@ -329,51 +330,39 @@ async def callback_handler(update: Update, context: CallbackContext):
         try:
             parts = data.split('_')
             audio_id = int(parts[3])
+            # اصلاح: تبدیل دقیق آیدی عکس
             photo_id = int(parts[4]) if parts[4] != '0' else None
+            
             ch = get_user_channel(user_id)
             
             if ch:
-                target_audio = None
-                if q.message.reply_to_message and q.message.reply_to_message.audio:
-                    target_audio = q.message.reply_to_message.audio
+                # 1. اول تلاش برای ارسال عکس (اگر وجود دارد)
+                if photo_id: 
+                    try: 
+                        await context.bot.copy_message(chat_id=ch['channel_id'], from_chat_id=q.message.chat_id, message_id=photo_id)
+                    except Exception as e: 
+                        logger.error(f"Banner Send Error: {e}") # اگر عکس نشد، ادامه بده و آهنگ رو بفرست
                 
-                unique_key = None
+                # 2. ارسال آهنگ و دریافت نتیجه
+                sent_msg = await context.bot.copy_message(chat_id=ch['channel_id'], from_chat_id=q.message.chat_id, message_id=audio_id)
+                
+                # ذخیره در هیستوری
+                target_audio = q.message.reply_to_message.audio if q.message.reply_to_message else None
                 if target_audio:
                     clean_a = clean_text_for_search(target_audio.performer or "")
                     clean_t = clean_text_for_search(target_audio.title or "")
                     unique_key = f"{clean_a}_{clean_t}"
-
-                history = load_history(user_id)
-                existing_msg_id = history.get(unique_key) if unique_key else None
-                
-                if existing_msg_id:
-                    link = get_message_link(ch['channel_id'], existing_msg_id, ch.get('channel_username'))
-                    
-                    kb = [[InlineKeyboardButton("🔗 Go to Message (Copy Link)", url=link)],
-                          [InlineKeyboardButton("🔙 Back", callback_data=f"restore_menu_{audio_id}_{photo_id or 0}_0")]]
-                    
-                    await q.edit_message_text(
-                        f"⚠️ <b>Duplicate Found!</b>\n\nThis song is already in your channel:\n📢 <b>{html.escape(ch['channel_title'])}</b>\n\nNo need to upload again.",
-                        reply_markup=InlineKeyboardMarkup(kb),
-                        parse_mode=ParseMode.HTML
-                    )
-                    return
-
-                sent_msg = None
-                if photo_id: 
-                    await context.bot.copy_message(chat_id=ch['channel_id'], from_chat_id=q.message.chat_id, message_id=photo_id)
-                
-                sent_msg = await context.bot.copy_message(chat_id=ch['channel_id'], from_chat_id=q.message.chat_id, message_id=audio_id)
-                
-                if unique_key and sent_msg:
                     save_to_history(user_id, unique_key, sent_msg.message_id)
 
                 await q.answer("✅ Sent!")
                 
+                # ساخت لینک جدید
                 new_link = get_message_link(ch['channel_id'], sent_msg.message_id, ch.get('channel_username'))
                 
+                # نکته مهم: آیدی پیام ارسال شده (sent_msg.message_id) را در دکمه بازگشت ذخیره میکنیم
+                # فرمت جدید: restore_menu_AudioID_PhotoID_SentMessageID
                 kb = [[InlineKeyboardButton("🔗 View in Channel", url=new_link)],
-                      [InlineKeyboardButton("🔙 Back to Menu", callback_data=f"restore_menu_{audio_id}_{photo_id or 0}_1")]]
+                      [InlineKeyboardButton("🔙 Back to Menu", callback_data=f"restore_menu_{audio_id}_{photo_id or 0}_{sent_msg.message_id}")]]
                 
                 await q.edit_message_text(
                     f"✅ <b>Successfully sent to channel:</b>\n📢 {html.escape(ch['channel_title'])}", 
@@ -390,13 +379,20 @@ async def callback_handler(update: Update, context: CallbackContext):
         parts = data.split('_')
         aid = parts[2]
         pid = parts[3]
-        is_sent = parts[4] == '1'
+        
+        # گرفتن آیدی پیام ارسال شده (اگر قبلا ارسال شده باشد)
+        # اگر عدد بزرگتر از 1 باشد یعنی آیدی پیام است، اگر 0 یا 1 باشد یعنی فلگ قدیمی
+        sent_msg_id = int(parts[4]) if len(parts) > 4 else 0
         
         kb_buttons = []
+        ch = get_user_channel(user_id)
         
-        if is_sent:
-            kb_buttons.append([InlineKeyboardButton("✅ Sent to Channel", callback_data="already_sent")])
+        # اگر پیام قبلاً ارسال شده (آیدی معتبر داریم) و کانال هنوز هست
+        if sent_msg_id > 1 and ch:
+            link = get_message_link(ch['channel_id'], sent_msg_id, ch.get('channel_username'))
+            kb_buttons.append([InlineKeyboardButton("🔗 View in Channel", url=link)])
         else:
+            # اگر هنوز ارسال نشده یا آیدی نداریم، دکمه ارسال را نشان بده
             kb_buttons.append([InlineKeyboardButton("✅ Send to Channel", callback_data=f'send_to_ch_{aid}_{pid}')])
             
         kb_buttons.append([
@@ -408,12 +404,7 @@ async def callback_handler(update: Update, context: CallbackContext):
             "File Ready! 👇", 
             reply_markup=InlineKeyboardMarkup(kb_buttons),
             parse_mode=ParseMode.HTML
-        )
-
-    elif data == 'already_sent':
-        await q.answer("⚠️ You have already sent this file to the channel.", show_alert=True)
-
-    elif data == 'cancel_send': await q.message.delete()
+        )   
     
     elif data.startswith('cancel_dl_'):
         chat_id = int(data.split('_')[2])
@@ -815,17 +806,19 @@ async def process_media(url, platform, chat_id, status_msg, context, origin_msg)
         
         kb_buttons = []
         if origin_msg.chat.type == ChatType.PRIVATE:
-            ch = get_user_channel(origin_msg.from_user.id)
-            if ch:
-                if final_audio_msg:
-                    kb_buttons.append([InlineKeyboardButton("✅ Send to Channel", callback_data=f'send_to_ch_{final_audio_msg.message_id}_0')])
-            else:
-                kb_buttons.append([InlineKeyboardButton("Set Channel", callback_data='settings_home')])
+             ch = get_user_channel(origin_msg.from_user.id)
+             if ch:
+                 if final_audio_msg:
+                     pid = final_photo_msg.message_id if final_photo_msg else 0
+                     aid = final_audio_msg.message_id
+                     kb_buttons.append([InlineKeyboardButton("✅ Send to Channel", callback_data=f'send_to_ch_{aid}_{pid}')])
+             else:
+                 kb_buttons.append([InlineKeyboardButton("Set Channel", callback_data='settings_home')])
 
         if final_audio_msg:
             kb_buttons.append([
                 InlineKeyboardButton("📝 Get Lyrics", callback_data=f'get_lyrics_{final_audio_msg.message_id}'),
-                InlineKeyboardButton("Close", callback_data='cancel_send')
+                InlineKeyboardButton("❌ Close", callback_data='cancel_send')
             ])
 
             await context.bot.send_message(
@@ -835,6 +828,7 @@ async def process_media(url, platform, chat_id, status_msg, context, origin_msg)
                 parse_mode=ParseMode.HTML, 
                 reply_to_message_id=final_audio_msg.message_id
             )
+
         else:
             await safe_edit(status_msg, "❌ <b>Download Failed.</b>", chat_id, remove_keyboard=True)
 
