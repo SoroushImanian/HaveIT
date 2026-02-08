@@ -11,6 +11,7 @@ import math
 import glob
 from thefuzz import fuzz
 from bs4 import BeautifulSoup
+from difflib import SequenceMatcher
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, APIC, TIT2, TPE1
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember, Chat
@@ -28,12 +29,12 @@ from telegram.error import RetryAfter, TimedOut, BadRequest, Forbidden
 import yt_dlp
 
 # --- CONFIGURATION ---
-ALLOWED_CHAT_IDS = [809612055, -1001919485429, 93365812, 114726592]
+ALLOWED_CHAT_IDS = [809987655, -1001919487654, 12465812, 709726592]
 MAX_DURATION_SECONDS = 1200
 PROXY_URL = 'socks5://127.0.0.1:3420'
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BASE_DATA_DIR = "Users_Data"
-CACHE_CHANNEL_ID = -1003848388297
+CACHE_CHANNEL_ID = -1003848366321
 CACHE_FILE = os.path.join(BASE_DATA_DIR, "global_cache.json")
 # ---------------------
 
@@ -43,6 +44,9 @@ logger = logging.getLogger(__name__)
 active_chats = set()
 last_update_time = {}
 user_states = {}
+
+def similar(a, b):
+    return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 def get_user_folder(user_id):
     path = os.path.join(BASE_DATA_DIR, str(user_id))
@@ -468,29 +472,76 @@ async def callback_handler(update: Update, context: CallbackContext):
             logger.error(f"Lyrics Error: {e}")
             await q.answer("❌ Search Error.", show_alert=True)
 
+def is_url(text):
+    return text.startswith("http") or "www." in text or ".com" in text or ".be" in text
 
 async def handle_message(update: Update, context: CallbackContext):
     msg = update.message or update.channel_post
     if not msg or not msg.text: return
+    
     chat_id = msg.chat.id
     if chat_id not in ALLOWED_CHAT_IDS: return
     
-    text = msg.text.strip()
-    platform = None
-    if "youtube.com" in text or "youtu.be" in text: platform = "YouTube"
-    elif "soundcloud.com" in text: platform = "SoundCloud"
-    elif "spotify.com" in text: platform = "Spotify"
-    
-    if platform:
-        if chat_id in active_chats:
-            await msg.reply_text('⚠️ You have an active process. Please wait.')
-            return
-        active_chats.add(chat_id)
-        user_states[chat_id] = {'running': True, 'start_time': time.time()}
-        kb = [[InlineKeyboardButton("Cancel Operation ❌", callback_data=f'cancel_dl_{chat_id}')]]
-        status = await msg.reply_text(f"🔍 <b>Checking {platform} link...</b>", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
-        asyncio.create_task(process_media(text, platform, chat_id, status, context, msg))
+    if chat_id in active_chats:
+        await msg.reply_text('⚠️ <b>Wait!</b> Finish the current download first.', parse_mode=ParseMode.HTML)
+        return
 
+    text = msg.text.strip()
+    
+    final_url = None
+    platform = None
+    is_search = False
+
+    if is_url(text):
+        final_url = text
+        if "youtube" in text or "youtu.be" in text: platform = "YouTube"
+        elif "soundcloud" in text: platform = "SoundCloud"
+        elif "spotify" in text: platform = "Spotify"
+        else: platform = "Link"
+    else:
+        is_search = True
+
+    active_chats.add(chat_id)
+    user_states[chat_id] = {'running': True}
+    
+    kb = [[InlineKeyboardButton("Cancel ❌", callback_data=f'cancel_dl_{chat_id}')]]
+    
+    status_text = f"🔎 <b>Searching...</b>" if is_search else f"🔗 <b>Processing Link...</b>"
+    status_msg = await msg.reply_text(status_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
+
+    try:
+        if is_search:
+            found_url, found_platform, found_title = await smart_search_engine(text, chat_id, status_msg, context)
+            
+            if found_url:
+                final_url = found_url
+                platform = found_platform
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg.message_id,
+                    text=f"✅ <b>Found on {found_platform}:</b>\n🎶 {html.escape(found_title)}\n\n⬇️ <b>Starting Download...</b>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(kb)
+                )
+            else:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg.message_id,
+                    text="❌ <b>Not Found.</b> try 'Artist - Song Name'.",
+                    parse_mode=ParseMode.HTML
+                )
+                active_chats.remove(chat_id)
+                del user_states[chat_id]
+                return
+
+        if final_url:
+            asyncio.create_task(process_media(final_url, platform, chat_id, status_msg, context, msg))
+
+    except Exception as e:
+        logger.error(f"Handler Error: {e}")
+        active_chats.discard(chat_id)
+        if chat_id in user_states: del user_states[chat_id]
+        await safe_edit(status_msg, "❌ Error.", chat_id)
 
 def clean_text_for_search(text):
     """
@@ -565,6 +616,60 @@ def cleanup_files(file_mp3, thumb_path, stem):
                 except: pass
     except Exception as e:
         print(f"Cleanup Error: {e}")
+
+async def smart_search_engine(query, chat_id, status_msg, context):
+    search_opts = {
+        'format': 'bestaudio/best',
+        'noplaylist': True,
+        'quiet': True,
+        'skip_download': True,
+        'extract_flat': True,
+        'source_address': '0.0.0.0',
+        'default_search': 'ytsearch', 
+    }
+
+    clean_query = query.replace("-", " ").strip()
+    
+    found_url = None
+    found_title = None
+    found_platform = "YouTube"
+
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id, 
+            message_id=status_msg.message_id, 
+            text=f"🔍 <b>Searching for:</b>\n<i>{html.escape(query)}</i>", 
+            parse_mode=ParseMode.HTML
+        )
+        
+        loop = asyncio.get_running_loop()
+        
+        info = await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(search_opts).extract_info(f"ytsearch1:{clean_query}", download=False))
+        
+        if info and 'entries' in info and len(info['entries']) > 0:
+            entry = info['entries'][0]
+            found_url = entry.get('url')
+            if not found_url: 
+                found_url = entry.get('webpage_url') 
+                
+            found_title = entry.get('title', 'Unknown Track')
+            
+            if 'youtube' in entry.get('extractor', '').lower() and entry.get('id'):
+                found_url = f"https://www.youtube.com/watch?v={entry['id']}"
+
+            return found_url, "YouTube", found_title
+
+    except Exception as e:
+        print(f"Search Error: {e}")
+
+    try:
+        sc_info = await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(search_opts).extract_info(f"scsearch1:{clean_query}", download=False))
+        if sc_info and 'entries' in sc_info and len(sc_info['entries']) > 0:
+            entry = sc_info['entries'][0]
+            return entry.get('url'), "SoundCloud", entry.get('title')
+    except: pass
+
+    return None, None, None
 
 async def process_media(url, platform, chat_id, status_msg, context, origin_msg):
     loop = asyncio.get_running_loop()
