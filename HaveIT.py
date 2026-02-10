@@ -14,6 +14,8 @@ from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, APIC, TIT2, TPE1
+from database import get_user_status, save_user_data, ADMIN_IDS
+from admin_panel import admin_menu, show_user_list, manage_single_user, change_status
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember, Chat
 from telegram.constants import ParseMode, ChatType, ChatMemberStatus
 from telegram.ext import (
@@ -29,12 +31,12 @@ from telegram.error import RetryAfter, TimedOut, BadRequest, Forbidden
 import yt_dlp
 
 # --- CONFIGURATION ---
-ALLOWED_CHAT_IDS = [809987655, -1001919487654, 12465812, 709726592]
+ALLOWED_CHAT_IDS = [809612055, -1001919485429, 93365812, 114726592]
 MAX_DURATION_SECONDS = 1200
 PROXY_URL = 'socks5://127.0.0.1:3420'
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BASE_DATA_DIR = "Users_Data"
-CACHE_CHANNEL_ID = -1003848366321
+CACHE_CHANNEL_ID = -1003848388297
 CACHE_FILE = os.path.join(BASE_DATA_DIR, "global_cache.json")
 # ---------------------
 
@@ -268,11 +270,95 @@ START_TEXT = (
     "⚙️ <i>Tap /settings to connect your channel.</i>"
 )
 
+async def request_access(update: Update, context: CallbackContext):
+    user = update.effective_user
+    status = get_user_status(user.id)
+
+    if status == "pending":
+        await update.message.reply_text("⏳ **Request Pending**\nPlease wait for admin approval.")
+        return
+    
+    if status == "denied" or status == "blocked":
+        return
+
+    try:
+        full_chat = await context.bot.get_chat(user.id)
+        bio = full_chat.bio
+    except: bio = "N/A"
+
+    user_info = {
+        "id": user.id,
+        "first_name": user.first_name,
+        "last_name": user.last_name or "",
+        "username": user.username or "",
+        "bio": bio,
+        "language_code": user.language_code,
+        "admin_msgs": {}
+    }
+    
+    admin_text = (
+        f"🔔 **New Access Request!**\n\n"
+        f"👤 Name: {user.full_name}\n"
+        f"🆔 ID: `{user.id}`\n"
+        f"🔗 User: @{user.username}\n"
+        f"📝 Bio: {bio}"
+    )
+    
+    kb = [
+        [InlineKeyboardButton("✅ Accept", callback_data=f"set_status_approved_{user.id}"),
+         InlineKeyboardButton("❌ Deny", callback_data=f"set_status_denied_{user.id}")],
+        [InlineKeyboardButton("🚫 Block", callback_data=f"set_status_blocked_{user.id}")]
+    ]
+    
+    photos = await user.get_profile_photos(limit=1)
+    file_id = photos.photos[0][-1].file_id if photos.total_count > 0 else None
+
+    for admin_id in ADMIN_IDS:
+        try:
+            sent_msg = None
+            if file_id:
+                sent_msg = await context.bot.send_photo(
+                    chat_id=admin_id, 
+                    photo=file_id, 
+                    caption=admin_text, 
+                    reply_markup=InlineKeyboardMarkup(kb), 
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                sent_msg = await context.bot.send_message(
+                    chat_id=admin_id, 
+                    text=admin_text, 
+                    reply_markup=InlineKeyboardMarkup(kb), 
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            
+            if sent_msg:
+                user_info["admin_msgs"][str(admin_id)] = sent_msg.message_id
+                
+        except Exception as e:
+            print(f"Error sending to admin {admin_id}: {e}")
+
+    save_user_data(user_info, "pending")
+
+    await update.message.reply_text("📨 **Request Sent!**\nYour profile has been sent to the admin for review.")
+
 async def start(update: Update, context: CallbackContext) -> None:
-    if update.effective_chat.id not in ALLOWED_CHAT_IDS: return
-    kb = [[InlineKeyboardButton("Settings ⚙️", callback_data='settings_home')]]
-    if update.message: await update.message.reply_text(START_TEXT, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
-    else: await update.callback_query.edit_message_text(START_TEXT, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
+    user_id = update.effective_user.id
+    status = get_user_status(user_id)
+
+    if status not in ["approved", "admin"]:
+        await request_access(update, context)
+        return
+
+    kb = [[InlineKeyboardButton("⚙️ Settings", callback_data='settings_home')]]
+    
+    if status == "admin":
+         kb.append([InlineKeyboardButton("👤 Admin Panel", callback_data='admin_home')])
+
+    if update.message: 
+        await update.message.reply_text(START_TEXT, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
+    else: 
+        await update.callback_query.edit_message_text(START_TEXT, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
 
 async def settings_command(update: Update, context: CallbackContext):
     await show_settings_menu(update, context, True)
@@ -313,6 +399,24 @@ async def callback_handler(update: Update, context: CallbackContext):
     data = q.data
     user_id = q.from_user.id
     
+    if data == "admin_home":
+        await admin_menu(update, context)
+        return
+    elif data == "close_admin_panel":
+        await q.message.delete()
+        return
+    elif data.startswith("list_"):
+        status = data.split("_")[1]
+        await show_user_list(update, context, status)
+        return
+    elif data.startswith("manage_user_"):
+        uid = int(data.split("_")[2])
+        await manage_single_user(update, context, uid)
+        return
+    elif data.startswith("set_status_"):
+        await change_status(update, context)
+        return
+
     if data == 'main_menu': await start(update, context)
     elif data == 'settings_home': await show_settings_menu(update, context)
     elif data == 'show_connect_guide':
@@ -417,6 +521,8 @@ async def callback_handler(update: Update, context: CallbackContext):
             user_states[chat_id]['running'] = False
             await q.answer("🛑 Requesting cancel...")
             await q.edit_message_text("⛔️ <b>Operation cancelled by user.</b>", parse_mode=ParseMode.HTML)
+        if chat_id in active_chats:
+            active_chats.remove(chat_id)
 
     elif data.startswith('get_lyrics_'):
         try:
@@ -480,14 +586,27 @@ async def handle_message(update: Update, context: CallbackContext):
     if not msg or not msg.text: return
     
     chat_id = msg.chat.id
-    if chat_id not in ALLOWED_CHAT_IDS: return
+    user_id = chat_id
+    text = msg.text.strip()
+
+    status = get_user_status(user_id)
     
+    if status not in ["approved", "admin"]:
+        if status == "blocked" or status == "denied":
+            return 
+            
+        if status == "pending":
+            await msg.reply_text("⏳ Your request is pending approval.")
+        
+        else:
+            await msg.reply_text("🔒 Authorization Required. Please type /start to request access.")
+            
+        return
+
     if chat_id in active_chats:
         await msg.reply_text('⚠️ <b>Wait!</b> Finish the current download first.', parse_mode=ParseMode.HTML)
         return
 
-    text = msg.text.strip()
-    
     final_url = None
     platform = None
     is_search = False
@@ -502,7 +621,9 @@ async def handle_message(update: Update, context: CallbackContext):
         is_search = True
 
     active_chats.add(chat_id)
-    user_states[chat_id] = {'running': True}
+    if chat_id not in user_states:
+        user_states[chat_id] = {}
+    user_states[chat_id]['running'] = True
     
     kb = [[InlineKeyboardButton("Cancel ❌", callback_data=f'cancel_dl_{chat_id}')]]
     
@@ -516,6 +637,7 @@ async def handle_message(update: Update, context: CallbackContext):
             if found_url:
                 final_url = found_url
                 platform = found_platform
+                
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=status_msg.message_id,
@@ -530,18 +652,20 @@ async def handle_message(update: Update, context: CallbackContext):
                     text="❌ <b>Not Found.</b> try 'Artist - Song Name'.",
                     parse_mode=ParseMode.HTML
                 )
-                active_chats.remove(chat_id)
-                del user_states[chat_id]
+
+                if chat_id in active_chats: active_chats.remove(chat_id)
+                if chat_id in user_states: del user_states[chat_id]
                 return
 
         if final_url:
             asyncio.create_task(process_media(final_url, platform, chat_id, status_msg, context, msg))
 
     except Exception as e:
-        logger.error(f"Handler Error: {e}")
-        active_chats.discard(chat_id)
+        print(f"Handler Error: {e}")
+        if chat_id in active_chats: active_chats.remove(chat_id)
         if chat_id in user_states: del user_states[chat_id]
-        await safe_edit(status_msg, "❌ Error.", chat_id)
+        try: await safe_edit(status_msg, "❌ Error occurred.", chat_id)
+        except: pass
 
 def clean_text_for_search(text):
     """
