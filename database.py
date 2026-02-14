@@ -57,3 +57,19 @@ def load_users_by_status(status):
                 with open(os.path.join(path, filename), 'r', encoding='utf-8') as f:
                     users.append(json.load(f))
     return users
+
+def get_user_counts():
+    """Returns the count of users in each status category."""
+    counts = {
+        "approved": 0,
+        "denied": 0,
+        "blocked": 0,
+        "pending": 0
+    }
+    
+    for status, path in STATUS_DIRS.items():
+        if os.path.exists(path):
+            files = [f for f in os.listdir(path) if f.endswith('.json')]
+            counts[status] = len(files)
+            
+    return counts
