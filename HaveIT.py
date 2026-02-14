@@ -937,7 +937,14 @@ async def process_media(url, platform, chat_id, status_msg, context, origin_msg)
                     }
 
                     def hook(d):
-                        if not user_states.get(chat_id, {}).get('running'): raise yt_dlp.utils.DownloadError("Cancelled")
+                        if not user_states.get(chat_id, {}).get('running'): 
+                            raise yt_dlp.utils.DownloadError("Cancelled")
+                        
+                        current_user_status = get_user_status(chat_id)
+                        
+                        if current_user_status not in ["approved", "admin"]:
+                            raise yt_dlp.utils.DownloadError("AccessRevoked")
+
                         now = time.time()
                         if chat_id in last_update_time:
                             if now - last_update_time[chat_id] < 3.0 and d['status'] == 'downloading': return
@@ -1063,8 +1070,17 @@ async def process_media(url, platform, chat_id, status_msg, context, origin_msg)
             await safe_edit(status_msg, "❌ <b>Download Failed.</b>", chat_id, remove_keyboard=True)
 
     except Exception as e:
-        if "Cancelled" in str(e):
-            await safe_edit(status_msg, "⛔️ <b>Cancelled.</b>", chat_id, remove_keyboard=True)
+        error_str = str(e)
+        
+        if "Cancelled" in error_str:
+            await safe_edit(status_msg, "⛔️ <b>Operation cancelled by user.</b>", chat_id, remove_keyboard=True)
+        
+        elif "AccessRevoked" in error_str:
+             await safe_edit(status_msg, "🚫 <b>Access Revoked.</b>\nYour access was removed by an admin. Download stopped.", chat_id, remove_keyboard=True)
+             if chat_id in active_chats: active_chats.remove(chat_id)
+             if chat_id in user_states: del user_states[chat_id]
+             return
+
         else:
             await safe_edit(status_msg, f"❌ Error: {e}", chat_id, remove_keyboard=True)
             logger.error(e)
