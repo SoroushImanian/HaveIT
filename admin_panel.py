@@ -1,21 +1,32 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackContext
 from telegram.constants import ParseMode
-from database import save_user_data, get_user_info, load_users_by_status, ADMIN_IDS
+from database import save_user_data, get_user_info, load_users_by_status, get_user_counts, ADMIN_IDS
 
 async def admin_menu(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS: return
 
+    counts = get_user_counts()
+
+    text = (
+        "📊 **Bot User Statistics**\n\n"
+        f"✅ Active Users: **{counts['approved']}** 👤\n"
+        f"⏳ Pending Requests: **{counts['pending']}** 👤\n"
+        f"❌ Denied Users: **{counts['denied']}** 👤\n"
+        f"🚫 Blocked Users: **{counts['blocked']}** 👤\n\n"
+        "⚙️ **Management Panel:** Select a category below:"
+    )
+
     kb = [
-        [InlineKeyboardButton("✅ Approved Users", callback_data="list_approved")],
-        [InlineKeyboardButton("❌ Denied Users", callback_data="list_denied")],
-        [InlineKeyboardButton("🚫 Blocked Users", callback_data="list_blocked")],
-        [InlineKeyboardButton("⏳ Pending Requests", callback_data="list_pending")],
+        [InlineKeyboardButton(f"📂 Active List ({counts['approved']})", callback_data="list_approved")],
+        [InlineKeyboardButton(f"⏳ Pending List ({counts['pending']})", callback_data="list_pending")],
+        [
+            InlineKeyboardButton(f"❌ Denied ({counts['denied']})", callback_data="list_denied"),
+            InlineKeyboardButton(f"🚫 Blocked ({counts['blocked']})", callback_data="list_blocked")
+        ],
         [InlineKeyboardButton("🔙 Return to Main Menu", callback_data="main_menu")]
     ]
-    
-    text = "👤 **Admin Management Panel**\nSelect a category to manage:"
     
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
@@ -23,42 +34,50 @@ async def admin_menu(update: Update, context: CallbackContext):
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
 
 async def show_user_list(update: Update, context: CallbackContext, status):
-    """Shows a list of users for a specific category."""
     query = update.callback_query
     users = load_users_by_status(status)
     
+    titles = {
+        "approved": "✅ Active Users List (Approved)",
+        "denied": "❌ Denied Users List",
+        "blocked": "🚫 Blocked Users List",
+        "pending": "⏳ Pending Requests List"
+    }
+    
+    header_text = titles.get(status, f"📂 Status: {status}")
+
     if not users:
-        await query.answer("List is empty!", show_alert=True)
+        await query.answer("📂 This list is empty!", show_alert=True)
         return
 
     kb = []
     for user in users:
         name = user.get('first_name', 'Unknown')
         uid = user['id']
-        kb.append([InlineKeyboardButton(f"{name} ({uid})", callback_data=f"manage_user_{uid}")])
+        kb.append([InlineKeyboardButton(f"👤 {name} | 🆔 {uid}", callback_data=f"manage_user_{uid}")])
     
-    kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin_home")])
+    kb.append([InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_home")])
     
-    await query.edit_message_text(f"Users in status: **{status.upper()}**", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+    await query.edit_message_text(f"**{header_text}**\n👇 Click on a user to manage:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
 
 async def manage_single_user(update: Update, context: CallbackContext, target_id):
-    """Shows details for a specific user and allows changing status."""
     user_data = get_user_info(target_id)
     if not user_data:
-        await update.callback_query.answer("User data not found.", show_alert=True)
+        await update.callback_query.answer("User not found.", show_alert=True)
         return
 
-    text = (f"👤 **User Details**\n"
+    text = (f"👤 **User Profile**\n\n"
             f"🆔 ID: `{user_data['id']}`\n"
             f"👤 Name: {user_data.get('first_name')} {user_data.get('last_name', '')}\n"
             f"🔗 Username: @{user_data.get('username', 'None')}\n"
-            f"📝 Bio: {user_data.get('bio', 'Not set')}")
+            f"📝 Bio: {user_data.get('bio', 'N/A')}\n\n"
+            "👇 Select an action:")
 
     kb = [
         [InlineKeyboardButton("✅ Approve", callback_data=f"set_status_approved_{target_id}")],
         [InlineKeyboardButton("❌ Deny", callback_data=f"set_status_denied_{target_id}")],
         [InlineKeyboardButton("🚫 Block", callback_data=f"set_status_blocked_{target_id}")],
-        [InlineKeyboardButton("🔙 Back", callback_data="admin_home")]
+        [InlineKeyboardButton("🔙 Back", callback_data=f"admin_home")]
     ]
     
     await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
@@ -72,15 +91,16 @@ async def change_status(update: Update, context: CallbackContext):
     target_id = int(parts[3])
     
     user_data = get_user_info(target_id)
-    
     if user_data:
         save_user_data(user_data, new_status)
         
         try:
             if new_status == "approved":
-                await context.bot.send_message(target_id, "✅ **Access Granted!**\nYour account has been approved. You can now use /start.")
+                await context.bot.send_message(target_id, "✅ **Congratulations!**\nYour account has been approved. You can now use /start.")
             elif new_status == "denied":
                 await context.bot.send_message(target_id, "❌ **Access Denied.**\nYour request was rejected by the admin.")
+            elif new_status == "blocked":
+                 await context.bot.send_message(target_id, "🚫 **Access Revoked.**\nYour account has been blocked by the administrator.")
         except: pass
 
         action_text = ""
@@ -89,6 +109,9 @@ async def change_status(update: Update, context: CallbackContext):
         elif new_status == "blocked": action_text = "🚫 Blocked"
         
         original_caption = query.message.caption if query.message.caption else query.message.text
+        if "➖➖➖➖➖➖➖" in original_caption:
+            original_caption = original_caption.split("➖➖➖➖➖➖➖")[0].strip()
+
         final_text = (f"{original_caption}\n\n"
                       f"➖➖➖➖➖➖➖\n"
                       f"**{action_text} by {admin_who_clicked.first_name}**")
@@ -123,6 +146,8 @@ async def change_status(update: Update, context: CallbackContext):
                     await query.edit_message_text(text=final_text, reply_markup=None, parse_mode=ParseMode.MARKDOWN)
             except: pass
             
+        await admin_menu(update, context)
+            
     else:
-        await query.answer("User data not found (Already processed).", show_alert=True)
-        await query.edit_message_reply_markup(reply_markup=None)
+        await query.answer("User data not found.", show_alert=True)
+        await admin_menu(update, context)
