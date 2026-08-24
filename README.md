@@ -68,8 +68,8 @@ HaveIT uses a proxy to bypass restrictions and keep the connection stable.
 
 ```bash
 # Install Warp
-curl -fsSL [https://pkg.cloudflareclient.com/pubkey.gpg](https://pkg.cloudflareclient.com/pubkey.gpg) | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] [https://pkg.cloudflareclient.com/](https://pkg.cloudflareclient.com/) $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
 sudo apt-get update && sudo apt-get install cloudflare-warp
 
 # Configure Port 3420
@@ -87,7 +87,7 @@ warp-cli connect
 ### 1. Clone the Repository
 
 ```bash
-git clone [https://github.com/SoroushImanian/HaveIT.git](https://github.com/SoroushImanian/HaveIT.git)
+git clone https://github.com/SoroushImanian/HaveIT.git
 cd HaveIT
 
 ```
